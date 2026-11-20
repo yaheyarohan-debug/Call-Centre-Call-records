@@ -14,6 +14,11 @@ interface HistoryViewProps {
 type ReviewFilter = 'ALL' | 'ai_draft' | 'evaluator_reviewed' | 'finalised' | 'transcript_only';
 type SortOrder = 'date_desc' | 'date_asc' | 'score_desc' | 'score_asc' | 'agent_asc';
 
+function fmtNum(val: unknown, digits = 1, fallback = '0.0'): string {
+  const n = typeof val === 'number' ? val : Number(val);
+  return Number.isFinite(n) ? n.toFixed(digits) : fallback;
+}
+
 export const HistoryView: React.FC<HistoryViewProps> = ({
   records,
   onOpenRecord,
@@ -30,44 +35,48 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
+  const safeRecords = Array.isArray(records) ? records : [];
+
   const uniqueAgents = useMemo(() => {
     const map = new Map<string, { key: string; label: string }>();
-    for (const r of records) {
-      const id = (r.metadata.agentId || '').trim();
-      const name = (r.metadata.agentName || 'Unknown').trim();
+    for (const r of safeRecords) {
+      const id = (r?.metadata?.agentId || '').trim();
+      const name = (r?.metadata?.agentName || 'Unknown').trim();
       const key = (id || name).toLowerCase();
       if (!map.has(key)) {
         map.set(key, { key, label: id ? `${name} (${id})` : name });
       }
     }
     return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label));
-  }, [records]);
+  }, [safeRecords]);
 
   const filtered = useMemo(() => {
-    const list = records.filter((r) => {
-      const isEvaluated = r.scorecard.length > 0;
+    const list = safeRecords.filter((r) => {
+      const isEvaluated = Array.isArray(r?.scorecard) && r.scorecard.length > 0;
       if (searchTerm.trim()) {
         const q = searchTerm.toLowerCase();
-        const matchAgent = r.metadata.agentName.toLowerCase().includes(q);
-        const matchId = r.metadata.agentId.toLowerCase().includes(q);
-        const matchRef = r.metadata.callReference.toLowerCase().includes(q);
-        const matchEval = r.metadata.evaluatorName.toLowerCase().includes(q);
+        const matchAgent = (r?.metadata?.agentName || '').toLowerCase().includes(q);
+        const matchId = (r?.metadata?.agentId || '').toLowerCase().includes(q);
+        const matchRef = (r?.metadata?.callReference || '').toLowerCase().includes(q);
+        const matchEval = (r?.metadata?.evaluatorName || '').toLowerCase().includes(q);
         if (!matchAgent && !matchId && !matchRef && !matchEval) return false;
       }
       if (agentFilter !== 'ALL') {
-        const key = (r.metadata.agentId.trim() || r.metadata.agentName.trim()).toLowerCase();
+        const key = (
+          (r?.metadata?.agentId || '').trim() || (r?.metadata?.agentName || '').trim()
+        ).toLowerCase();
         if (key !== agentFilter) return false;
       }
-      if (dateFrom && r.metadata.callDate < dateFrom) return false;
-      if (dateTo && r.metadata.callDate > dateTo) return false;
+      if (dateFrom && (r?.metadata?.callDate || '') < dateFrom) return false;
+      if (dateTo && (r?.metadata?.callDate || '') > dateTo) return false;
       if (bandFilter !== 'ALL') {
-        if (!isEvaluated || r.performanceBand !== bandFilter) return false;
+        if (!isEvaluated || r?.performanceBand !== bandFilter) return false;
       }
       if (reviewFilter !== 'ALL') {
         if (reviewFilter === 'transcript_only') {
           if (isEvaluated) return false;
         } else {
-          if (!isEvaluated || r.reviewState !== reviewFilter) return false;
+          if (!isEvaluated || r?.reviewState !== reviewFilter) return false;
         }
       }
       return true;
@@ -75,31 +84,36 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
 
     return [...list].sort((a, b) => {
       if (sortOrder === 'date_asc') {
-        return (a.metadata.callDate || a.createdAt).localeCompare(b.metadata.callDate || b.createdAt);
+        return (a?.metadata?.callDate || a?.createdAt || '').localeCompare(
+          b?.metadata?.callDate || b?.createdAt || ''
+        );
       }
       if (sortOrder === 'score_desc') {
-        return b.overallScore - a.overallScore;
+        return (Number(b?.overallScore) || 0) - (Number(a?.overallScore) || 0);
       }
       if (sortOrder === 'score_asc') {
-        return a.overallScore - b.overallScore;
+        return (Number(a?.overallScore) || 0) - (Number(b?.overallScore) || 0);
       }
       if (sortOrder === 'agent_asc') {
-        return a.metadata.agentName.localeCompare(b.metadata.agentName);
+        return (a?.metadata?.agentName || '').localeCompare(b?.metadata?.agentName || '');
       }
-      // date_desc default
-      return (b.metadata.callDate || b.createdAt).localeCompare(a.metadata.callDate || a.createdAt) ||
-        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      return (
+        (b?.metadata?.callDate || b?.createdAt || '').localeCompare(
+          a?.metadata?.callDate || a?.createdAt || ''
+        ) ||
+        new Date(b?.createdAt || 0).getTime() - new Date(a?.createdAt || 0).getTime()
+      );
     });
-  }, [records, searchTerm, agentFilter, dateFrom, dateTo, bandFilter, reviewFilter, sortOrder]);
+  }, [safeRecords, searchTerm, agentFilter, dateFrom, dateTo, bandFilter, reviewFilter, sortOrder]);
 
   const filteredEvaluated = useMemo(
-    () => filtered.filter((r) => r.scorecard.length > 0),
+    () => filtered.filter((r) => Array.isArray(r?.scorecard) && r.scorecard.length > 0),
     [filtered]
   );
 
   const filteredAvg = useMemo(() => {
     if (filteredEvaluated.length === 0) return null;
-    const sum = filteredEvaluated.reduce((s, r) => s + r.overallScore, 0);
+    const sum = filteredEvaluated.reduce((s, r) => s + (Number(r?.overallScore) || 0), 0);
     return Math.round((sum / filteredEvaluated.length) * 10) / 10;
   }, [filteredEvaluated]);
 
@@ -281,14 +295,14 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
           <div className="flex flex-wrap items-center gap-3 text-slate-600">
             <span>
               Showing <strong className="font-mono text-slate-900">{filtered.length}</strong> of{' '}
-              <strong className="font-mono text-slate-900">{records.length}</strong> records
+              <strong className="font-mono text-slate-900">{safeRecords.length}</strong> records
             </span>
             {filteredAvg !== null && (
               <>
                 <span aria-hidden="true">·</span>
                 <span>
                   Filtered Avg CQM Score:{' '}
-                  <strong className="font-mono text-blue-700">{filteredAvg.toFixed(1)} / 100</strong>
+                  <strong className="font-mono text-blue-700">{fmtNum(filteredAvg, 1, '0.0')} / 100</strong>
                 </span>
               </>
             )}
@@ -339,11 +353,11 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
         {filtered.length === 0 ? (
           <div className="p-10 text-center">
             <p className="text-sm text-slate-600">
-              {records.length === 0
+              {safeRecords.length === 0
                 ? 'No evaluation records found in local browser storage.'
                 : 'No evaluations match your search or date filters.'}
             </p>
-            {records.length === 0 && (
+            {safeRecords.length === 0 && (
               <button
                 type="button"
                 onClick={onNavigateUpload}
@@ -378,12 +392,17 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
             </thead>
             <tbody className="divide-y divide-slate-100">
               {filtered.map((rec) => {
-                const isEvaluated = rec.scorecard.length > 0;
+                const isEvaluated = Array.isArray(rec?.scorecard) && rec.scorecard.length > 0;
                 const scoreOverridden =
-                  isEvaluated && Math.abs(rec.overallScore - rec.aiOverallScore) > 0.01;
-                const activeFindings = rec.criticalFindings.filter(
-                  (f) => f.status !== 'rejected'
-                ).length;
+                  isEvaluated &&
+                  Math.abs((Number(rec?.overallScore) || 0) - (Number(rec?.aiOverallScore) || 0)) >
+                    0.01;
+                const activeFindings = Array.isArray(rec?.criticalFindings)
+                  ? rec.criticalFindings.filter((f) => f?.status !== 'rejected').length
+                  : 0;
+                const langs = Array.isArray(rec?.transcription?.detectedLanguages)
+                  ? rec.transcription.detectedLanguages.join(' · ')
+                  : '';
 
                 return (
                   <tr key={rec.id} className="hover:bg-slate-50/80">
@@ -392,12 +411,12 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                         type="checkbox"
                         checked={selectedIds.includes(rec.id)}
                         onChange={() => toggleSelect(rec.id)}
-                        aria-label={`Select ${rec.metadata.callReference}`}
+                        aria-label={`Select ${rec?.metadata?.callReference ?? rec.id}`}
                       />
                     </td>
                     <td className="px-3 py-3 whitespace-nowrap">
                       <div className="font-mono text-xs font-semibold text-slate-900">
-                        {rec.metadata.callReference}
+                        {rec?.metadata?.callReference ?? '—'}
                       </div>
                       {activeFindings > 0 && (
                         <div className="text-[11px] font-medium text-red-700">
@@ -406,27 +425,27 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                       )}
                     </td>
                     <td className="px-4 py-3">
-                      <div className="font-medium text-slate-900">{rec.metadata.agentName}</div>
-                      <div className="font-mono text-xs text-slate-500">{rec.metadata.agentId}</div>
+                      <div className="font-medium text-slate-900">{rec?.metadata?.agentName ?? '—'}</div>
+                      <div className="font-mono text-xs text-slate-500">{rec?.metadata?.agentId ?? '—'}</div>
                     </td>
                     <td className="px-4 py-3 font-mono text-xs tabular-nums text-slate-600 whitespace-nowrap">
-                      {rec.metadata.callDate}
+                      {rec?.metadata?.callDate ?? '—'}
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-600">
-                      {rec.transcription.detectedLanguages.join(' · ') || '—'}
+                      {langs || '—'}
                     </td>
                     <td className="px-4 py-3 text-right font-mono text-xs tabular-nums text-slate-600 whitespace-nowrap">
-                      {formatDuration(rec.metadata.durationSeconds)}
+                      {formatDuration(Number(rec?.metadata?.durationSeconds) || 0)}
                     </td>
                     <td className="px-4 py-3 text-right font-mono tabular-nums whitespace-nowrap">
                       {isEvaluated ? (
                         <div>
                           <div className="text-sm font-semibold text-slate-900">
-                            {rec.overallScore.toFixed(1)}
+                            {fmtNum(rec?.overallScore, 1, '—')}
                           </div>
                           {scoreOverridden && (
                             <div className="text-[11px] text-slate-500">
-                              AI: {rec.aiOverallScore.toFixed(1)}
+                              AI: {fmtNum(rec?.aiOverallScore, 1, '0.0')}
                             </div>
                           )}
                         </div>
@@ -438,16 +457,16 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                       {isEvaluated ? (
                         <span
                           className={
-                            rec.performanceBand === 'Excellent'
+                            rec?.performanceBand === 'Excellent'
                               ? 'text-emerald-700'
-                              : rec.performanceBand === 'Good'
+                              : rec?.performanceBand === 'Good'
                               ? 'text-blue-700'
-                              : rec.performanceBand === 'Average'
+                              : rec?.performanceBand === 'Average'
                               ? 'text-amber-700'
                               : 'text-red-700'
                           }
                         >
-                          {rec.performanceBand}
+                          {rec?.performanceBand ?? '—'}
                         </span>
                       ) : (
                         <span className="font-normal text-slate-500">Transcript Only</span>
@@ -456,9 +475,9 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                     <td className="px-4 py-3 text-xs text-slate-600 whitespace-nowrap">
                       {!isEvaluated
                         ? 'Pending Evaluation'
-                        : rec.reviewState === 'finalised'
+                        : rec?.reviewState === 'finalised'
                         ? 'Finalised'
-                        : rec.reviewState === 'evaluator_reviewed'
+                        : rec?.reviewState === 'evaluator_reviewed'
                         ? 'Reviewed'
                         : 'AI Draft'}
                     </td>
