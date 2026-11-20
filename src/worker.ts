@@ -9,6 +9,55 @@ export interface Env {
 
 let dedicatedModelUnsupported = false;
 
+const FAIRFIRST_CQM_KNOWLEDGE = `
+FAIRFIRST INSURANCE SRI LANKA — CALL QUALITY MONITORING (CQM) & FNOL KNOWLEDGE BASE
+
+1. STANDARD GREETING:
+- Expected standard greeting: "Ayubowan Fairfirst Insurance I am (Agent Name) How May I assist You?" (or clear polite equivalent in Sinhala/Singlish/English/Tamil stating Fairfirst Insurance, Agent Name, and offer to assist).
+- Check whether greeting is prompt, clear, polite, and includes brand + agent identity + assistance offer.
+
+2. HOLDING PROCEDURE:
+- Before placing a customer on hold, agent should politely ask permission: "කරුණාකර දුරකතනයේ රැඳී ඉන්න පුළුවන්ද සර්/මිස් මහත්මයා" (or polite Singlish/English/Tamil equivalent).
+- Upon returning from hold, agent should thank the customer: "ස්තුතියි සර් / මිස් රැඳී සිටියාට" (or polite equivalent).
+- If no hold occurred and no hold-related issue happened, mark as Not Assessable (unless hold was clearly needed and missed).
+
+3. COURTESY TOWARDS CLIENT, EMPATHY & TONE:
+- Courtesy (ආචාරශීලී බව): Respectful address (Sir/Madam/මහත්මයා/ඔබතුමා/ඔබතුමිය), polite phrasing, no interrupting or dismissive language.
+- Empathy: Appropriate empathetic expressions especially during accidents, injuries, vehicle damage, stress, or delays (e.g., checking if anyone is injured, expressing concern/care).
+- Tone: Evaluate vocal tone/manner reflected in phrasing and delivery (calm, supportive, professional, attentive vs rushed, cold, defensive, or harsh).
+
+4. ACCIDENT / FNOL SCRIPT & KEY INFORMATION CHECKLIST:
+- Wellbeing & Injuries: Ask if anyone is injured and how many people are injured.
+- Vehicle Number & Data Protection: Ask for vehicle number; assure that information provided is protected/confidential.
+- Policyholder & Caller Details: Ask whose name the vehicle is insured under; ask whether the calling phone number belongs to the caller.
+- Driver & Relationship: Ask who was driving at the time of the accident. If someone else called, ask politely to speak with the driver (if comfortable). If driver is different from the insured/policyholder, ask the relationship to the policyholder.
+- Driver Identification: Ask for full name, Date of Birth (DOB), and Driver's License number or NIC number.
+- Time of Accident & Late Intimation: Ask how long ago the accident occurred. If it is a prior/late intimation, ask date and time of accident and reason for delay in intimating.
+- Location, Police Station & Incident Description: Ask where the accident happened, relevant Police Station, and how the accident occurred.
+- Third Party, Damages & Occupants: If third party is involved, ask for the other vehicle number and insurance company. Ask about damages to the vehicle and how many people were in the vehicle at the time of the accident.
+- Closing & Clarity: Thank customer for information, explain next steps clearly, ask if information is clear ("තොරතුරු පැහැදිලියි ද ඔබතුමාට ඔබතුමියට"), and close politely ("ස්තුතියි Fairfirst Insurance ඇමතුවාට සුබ දවසක්").
+
+5. INSPECTION ARRANGEMENT RULES (VIRTUAL VS PHYSICAL & RESTRICTIONS):
+- Virtual Inspection: If customer has a smartphone, explain clearly that a link will be sent via normal SMS, and when the customer turns on mobile data and taps/touches the link, they will automatically connect with an assessor.
+- Mandatory Virtual / C2C Exclusions (DO NOT offer Virtual/C2C when these apply):
+  * Heavy damage
+  * Drunk and drive
+  * Accident occurred between 10:00 PM (22:00) and 6:00 AM (06:00)
+  * More than 24 hours have passed since the accident occurred
+- Physical Inspection: If physical inspection is arranged, state that an assessor will come within 30 or 45 minutes to inspect the vehicle.
+- MANDATORY ASSESSOR SMS RULE (BOTH VIRTUAL & PHYSICAL): In BOTH Virtual and Physical inspection cases, the agent MUST inform the customer that the attending assessor's telephone number will be sent via SMS, and if there is any issue/problem, to call that number ("එන assessor මහත්මයාගේ දුරකථන අංකය ඔබතුමාට SMS එකකින් එවන්නම්. ගැටලුවක් තිබුණොත් ඒකට call කරන්න").
+
+6. SUPPORTING TEAMS & CALLBACK RULE (MOTOR CLAIM / MEDICAL / MOBITEL):
+- For Motor Claim calls, Medical calls, or Mobitel-related inquiries connected to internal/call-centre supporting teams:
+  * Agent MUST inform the customer that the supporting team will give a callback within 15 minutes, and the customer does NOT need to call back again ("විනාඩි 15 ඇතුළත call back එකක් දෙනවා, නැවත ඔබතුමා ගන්න ඕනේ නැහැ").
+
+7. SERVICE LEVEL AGREEMENTS (SLA) REFERENCE:
+- Claims: 15 minutes
+- Mobitel / Medical Inquiry: 15 minutes
+- Motor Policy / Renewal / Insurance Card: 30 minutes
+(Note: When evaluating from audio/transcript alone, flag SLA commitments/timelines communicated to the customer or note if system/turnaround SLA verification requires operational/MCC logs).
+`.trim();
+
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
@@ -168,6 +217,7 @@ async function handleHealth(env: Env): Promise<Response> {
   return jsonResponse({
     ok: true,
     geminiConfigured: hasKey,
+    cqmKnowledgeLoaded: true,
     models: {
       dedicatedTranscription: 'gemini-3.5-transcribe',
       audioUnderstandingAndEvaluation: 'gemini-4-hydrogen',
@@ -319,18 +369,18 @@ ANTI-HALLUCINATION RULE (HIGHEST PRIORITY):
 
 LANGUAGE & DISPLAY RULES (Supported: ${enabledLanguages || 'Sinhala, English, Tamil'}):
 1. SINHALA -> SINGLISH (ROMAN SINHALA):
-   - Transcribe spoken Sinhala words phonetically in Romanized Singlish (Roman letters).
-   - NEVER output Sinhala Unicode script in "text".
-   - NEVER translate Sinhala speech into English; preserve the exact spoken meaning in Singlish.
+  - Transcribe spoken Sinhala words phonetically in Romanized Singlish (Roman letters).
+  - NEVER output Sinhala Unicode script in "text".
+  - NEVER translate Sinhala speech into English; preserve the exact spoken meaning in Singlish.
 2. ENGLISH:
-   - Transcribe spoken English words verbatim. Preserve Sinhala-English code-switching within the same sentence.
+  - Transcribe spoken English words verbatim. Preserve Sinhala-English code-switching within the same sentence.
 3. TAMIL:
-   - Output Tamil speech in Tamil script in "text" and provide Roman Tamil in "romanText".
-   - If Tamil speech cannot be reliably recognised, set confidence to "low", explain in "uncertaintyNote", and use "[Unclear audio]".
+  - Output Tamil speech in Tamil script in "text" and provide Roman Tamil in "romanText".
+  - If Tamil speech cannot be reliably recognised, set confidence to "low", explain in "uncertaintyNote", and use "[Unclear audio]".
 4. SPEAKER DIARIZATION:
-   - Label each turn "Agent" or "Customer" based on conversational role. Do NOT assume the first speaker is always the Agent.
+  - Label each turn "Agent" or "Customer" based on conversational role. Do NOT assume the first speaker is always the Agent.
 5. TIMESTAMPS:
-   - Provide accurate chronological MM:SS timestamps strictly within the recording duration.`;
+  - Provide accurate chronological MM:SS timestamps strictly within the recording duration.`;
 
     const referenceHint = rawDedicatedTranscript
       ? `\n\nReference raw ASR output from dedicated transcription pass (verify directly against the audio; correct any errors, apply Singlish for Sinhala, and add accurate speaker labels + timestamps):\n"""\n${rawDedicatedTranscript.slice(0, 12000)}\n"""`
@@ -650,7 +700,7 @@ async function handleEvaluate(request: Request, env: Env): Promise<Response> {
       durationSeconds?: number;
     };
 
-    const { transcriptSegments, metadata, scorecardConfig, qaRules, thresholds, durationSeconds } = body;
+    const { transcriptSegments, metadata, scorecardConfig, qaRules, durationSeconds } = body;
 
     if (!Array.isArray(transcriptSegments) || transcriptSegments.length === 0) {
       return jsonResponse({ error: 'Cannot evaluate call without transcript segments.' }, 400);
@@ -684,35 +734,37 @@ async function handleEvaluate(request: Request, env: Env): Promise<Response> {
       )
       .join('\n');
 
-    const systemInstruction = `You are a senior insurance Contact Centre Quality Assurance Specialist evaluating a First Notice of Loss (FNOL) call in Sri Lanka (calls may be in Singlish/Roman Sinhala, English, or Tamil).
+    const systemInstruction = `You are a senior insurance Contact Centre Quality Assurance Specialist evaluating a Fairfirst Insurance Sri Lanka call (primarily FNOL / Motor Claim / Medical / Mobitel / Policy & Renewal inquiries; calls may be in Singlish/Roman Sinhala, English, or Tamil).
+
+${FAIRFIRST_CQM_KNOWLEDGE}
 
 EVALUATION PRINCIPLES (STRICT):
-1. Evaluate EVERY CQM parameter independently based ONLY on actual transcript evidence.
+1. Evaluate EVERY CQM parameter independently based ONLY on actual transcript evidence and the Fairfirst CQM Knowledge Base above.
 2. NEVER invent conversations, customer statements, or Agent actions that are not in the transcript.
 3. NEVER award marks based on assumptions. Do not assume information was recorded in the MCC system merely because it was spoken on the call—explicitly flag MCC-system-dependent checks for manual system verification.
 4. NOT ASSESSABLE RULE: If a parameter cannot be evaluated from the recording (for example, Holding Procedure if no hold occurred and no hold policy breach applies, OR if the relevant audio segment is [Unclear audio] / low-confidence transcription), mark status as "Not Assessable", set awardedMarks to 0, set needsHumanReview to true, and explain why manual review is required. Do NOT silently award full marks.
-5. Do not penalise an Agent for a requirement that is not applicable (e.g., late intimation reason if the accident happened just now; distance moved if the vehicle was not moved).
-6. Distinguish clearly between a genuine Agent process failure and a transcription uncertainty.
-7. Provide exact MM:SS timestamps and verbatim transcript quotes for evidence, especially for negative findings.
-8. Explain clearly why marks were deducted, and provide practical, constructive coaching feedback without repeating the same issue across unrelated parameters.
-9. Performance bands: Below 70 = Poor, 70 to <80 = Average, 80 to 90 = Good, Above 90 = Excellent.`;
+5. Do not penalise an Agent for a requirement that is not applicable (e.g., late intimation reason if the accident happened just now; third-party details if no third party was involved).
+6. Flag policy/rule breaches clearly—especially if Virtual/C2C inspection was offered when heavy damage, drunk & drive, 10:00 PM–6:00 AM timing, or >24 hours elapsed applies, or if the mandatory Assessor SMS number rule or 15-minute callback ("no need to call back") rule was missed.
+7. Distinguish clearly between a genuine Agent process failure and a transcription uncertainty.
+8. Provide exact MM:SS timestamps and verbatim transcript quotes for evidence, especially for negative findings.
+9. Explain clearly why marks were deducted, and provide practical, constructive coaching feedback without repeating the same issue across unrelated parameters.
+10. Performance bands: Below 70 = Poor, 70 to <80 = Average, 80 to 90 = Good, Above 90 = Excellent.`;
 
-    const prompt = `Evaluate this FNOL call transcript against the exact CQM Scorecard and FNOL QA Rules below.
+    const prompt = `Evaluate this Fairfirst Insurance call transcript against the CQM Scorecard, FNOL/Inquiry QA Rules, and Fairfirst CQM Knowledge Base.
 
 CALL METADATA:
 - Agent Name: ${metadata?.agentName || 'Unknown'}
 - Agent ID: ${metadata?.agentId || 'Unknown'}
 - Call Reference: ${metadata?.callReference || 'N/A'}
 - Call Date: ${metadata?.callDate || 'N/A'}
-- Call Type: FNOL
 - Recorded Duration: ${Math.round(Number(durationSeconds) || 0)} seconds
 - Additional Notes: ${metadata?.additionalNotes || 'None'}
 
 SCORECARD PARAMETERS (evaluate all ${activeScorecard.length} parameters independently, preserving exact parameterId and maxMarks):
-${scorecardSpec}
+${scorecardSpec || '- Standard CQM evaluation across Greeting, Holding, Courtesy/Empathy/Tone, Script/Information Gathering, Inspection/Callback/SLA accuracy, and Closing.'}
 
-FNOL PROCESS & MANDATORY QA CHECKS:
-${rulesSpec}
+PROCESS & MANDATORY QA CHECKS:
+${rulesSpec || '- Check Standard Greeting, Holding Method, Courtesy/Empathy/Tone, FNOL Script questions, Virtual/Physical Inspection & Assessor SMS rule, Supporting Team 15-min callback rule, and SLA timelines.'}
 
 CHRONOLOGICAL TRANSCRIPT:
 ${formattedTranscript}`;
@@ -820,8 +872,8 @@ ${formattedTranscript}`;
               responseSchema: evalSchema,
             },
           }),
-          30000,
-          'gemini-4-hydrogen-eval'
+          35000,
+          'gemini-4-hydrogen-evaluate'
         )
       );
     } catch (err: unknown) {
@@ -838,142 +890,21 @@ ${formattedTranscript}`;
             },
           }),
           25000,
-          'gemini-3.1-flash-lite-eval'
+          'gemini-3.1-flash-lite-evaluate'
         )
       );
     }
 
-    const parsed = JSON.parse((evalResp.text || '{}').trim());
-    const aiScorecardRaw: Array<Record<string, unknown>> = Array.isArray(parsed.scorecard) ? parsed.scorecard : [];
-
-    const validStatuses = ['Excellent', 'Good', 'Needs Improvement', 'Failed', 'Not Assessable'];
-    const normalizedScorecard = activeScorecard.map((cfg) => {
-      const match =
-        aiScorecardRaw.find((item) => item.parameterId === cfg.id) ||
-        aiScorecardRaw.find((item) => String(item.parameterName || '').toLowerCase() === cfg.name.toLowerCase());
-
-      if (!match) {
-        return {
-          parameterId: cfg.id,
-          parameterName: cfg.name,
-          maxMarks: cfg.weight,
-          awardedMarks: 0,
-          evaluatorMarks: null,
-          status: 'Not Assessable',
-          reason: 'Parameter was not returned by evaluation pass and requires manual review.',
-          evidence: 'N/A',
-          timestamp: 'N/A',
-          timestampSeconds: null,
-          recommendedImprovement: 'Review transcript manually for this criterion.',
-          needsHumanReview: true,
-          systemVerificationRequired: false,
-          evaluatorComment: '',
-          reviewDecision: 'pending',
-        };
-      }
-
-      const status = validStatuses.includes(String(match.status)) ? String(match.status) : 'Not Assessable';
-      const rawAwarded = Number(match.awardedMarks);
-      const clampedMarks =
-        status === 'Not Assessable'
-          ? 0
-          : Number.isFinite(rawAwarded)
-          ? Math.max(0, Math.min(cfg.weight, Math.round(rawAwarded * 10) / 10))
-          : 0;
-      const ts = typeof match.timestamp === 'string' && match.timestamp.trim() ? match.timestamp.trim() : 'N/A';
-
-      return {
-        parameterId: cfg.id,
-        parameterName: cfg.name,
-        maxMarks: cfg.weight,
-        awardedMarks: clampedMarks,
-        evaluatorMarks: null,
-        status,
-        reason: typeof match.reason === 'string' ? match.reason : '',
-        evidence: typeof match.evidence === 'string' ? match.evidence : 'N/A',
-        timestamp: ts,
-        timestampSeconds: /^\d{1,2}:\d{2}/.test(ts) ? parseTimestampToSeconds(ts) : null,
-        recommendedImprovement: typeof match.recommendedImprovement === 'string' ? match.recommendedImprovement : '',
-        needsHumanReview: Boolean(match.needsHumanReview) || status === 'Not Assessable',
-        systemVerificationRequired: Boolean(match.systemVerificationRequired),
-        evaluatorComment: '',
-        reviewDecision: 'pending',
-      };
-    });
-
-    const aiOverallScore =
-      Math.round(normalizedScorecard.reduce((sum, item) => sum + item.awardedMarks, 0) * 10) / 10;
-
-    const assessedMaxMarks = normalizedScorecard.reduce(
-      (sum, item) => sum + (item.status === 'Not Assessable' ? 0 : item.maxMarks),
-      0
-    );
-
-    const excellentMin = Number(thresholds?.excellentMin ?? 90);
-    const goodMin = Number(thresholds?.goodMin ?? 80);
-    const averageMin = Number(thresholds?.averageMin ?? 70);
-
-    let performanceBand = 'Poor';
-    if (aiOverallScore > excellentMin) performanceBand = 'Excellent';
-    else if (aiOverallScore >= goodMin) performanceBand = 'Good';
-    else if (aiOverallScore >= averageMin) performanceBand = 'Average';
-
-    const validRuleResults = ['Passed', 'Failed', 'Partial', 'Not Applicable', 'Requires Manual MCC Verification'];
-    const rawChecks: Array<Record<string, unknown>> = Array.isArray(parsed.fnolChecks) ? parsed.fnolChecks : [];
-    const normalizedChecks = activeRules.map((rule) => {
-      const found = rawChecks.find((c) => c.ruleId === rule.id);
-      const resVal =
-        found && validRuleResults.includes(String(found.result))
-          ? String(found.result)
-          : rule.requiresMccSystemCheck
-          ? 'Requires Manual MCC Verification'
-          : 'Not Applicable';
-
-      return {
-        ruleId: rule.id,
-        ruleTitle: rule.title,
-        applicable: found ? Boolean(found.applicable) : true,
-        result: resVal,
-        evidence: found && typeof found.evidence === 'string' ? found.evidence : 'N/A',
-        timestamp: found && typeof found.timestamp === 'string' ? found.timestamp : 'N/A',
-        notes: found && typeof found.notes === 'string' ? found.notes : '',
-        evaluatorConfirmed: null,
-      };
-    });
-
-    const rawFindings: Array<Record<string, unknown>> = Array.isArray(parsed.criticalFindings) ? parsed.criticalFindings : [];
-    const normalizedFindings = rawFindings.map((f, idx) => ({
-      id: `finding-${idx + 1}-${Date.now()}`,
-      category: typeof f.category === 'string' ? f.category : 'Process Failure',
-      severity: f.severity === 'High' ? 'High' : 'Medium',
-      description: typeof f.description === 'string' ? f.description : '',
-      timestamp: typeof f.timestamp === 'string' ? f.timestamp : 'N/A',
-      evidence: typeof f.evidence === 'string' ? f.evidence : '',
-      status: 'pending',
-    }));
-
-    const coachingFeedback = {
-      strengths: Array.isArray(parsed.coachingFeedback?.strengths) ? parsed.coachingFeedback.strengths : [],
-      areasForImprovement: Array.isArray(parsed.coachingFeedback?.areasForImprovement)
-        ? parsed.coachingFeedback.areasForImprovement
-        : [],
-      recommendedActions: Array.isArray(parsed.coachingFeedback?.recommendedActions)
-        ? parsed.coachingFeedback.recommendedActions
-        : [],
-    };
-
-    const requiresManualReview = normalizedScorecard.some((p) => p.needsHumanReview || p.systemVerificationRequired);
-
+    const parsedEval = JSON.parse((evalResp.text || '{}').trim());
     return jsonResponse({
-      scorecard: normalizedScorecard,
-      fnolChecks: normalizedChecks,
-      criticalFindings: normalizedFindings,
-      coachingFeedback,
-      overallScore: aiOverallScore,
-      aiOverallScore,
-      assessedMaxMarks,
-      performanceBand,
-      requiresManualReview,
+      scorecard: Array.isArray(parsedEval.scorecard) ? parsedEval.scorecard : [],
+      fnolChecks: Array.isArray(parsedEval.fnolChecks) ? parsedEval.fnolChecks : [],
+      criticalFindings: Array.isArray(parsedEval.criticalFindings) ? parsedEval.criticalFindings : [],
+      coachingFeedback: parsedEval.coachingFeedback || {
+        strengths: [],
+        areasForImprovement: [],
+        recommendedActions: [],
+      },
     });
   } catch (err: unknown) {
     const mapped = mapGeminiError(err);
@@ -984,32 +915,36 @@ ${formattedTranscript}`;
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    const { pathname } = url;
+    const path = url.pathname;
 
-    if (pathname === '/api/health' && request.method === 'GET') {
+    if (request.method === 'OPTIONS') {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type',
+        },
+      });
+    }
+
+    if (path === '/api/health' && request.method === 'GET') {
       return handleHealth(env);
     }
-
-    if (pathname === '/api/transcribe' && request.method === 'POST') {
+    if (path === '/api/transcribe' && request.method === 'POST') {
       return handleTranscribe(request, env);
     }
-
-    if (pathname === '/api/transliterate-singlish' && request.method === 'POST') {
+    if (path === '/api/transliterate-singlish' && request.method === 'POST') {
       return handleTransliterateSinglish(request, env);
     }
-
-    if (pathname === '/api/evaluate' && request.method === 'POST') {
+    if (path === '/api/evaluate' && request.method === 'POST') {
       return handleEvaluate(request, env);
-    }
-
-    if (pathname.startsWith('/api/')) {
-      return jsonResponse({ error: `Method ${request.method} not allowed on ${pathname}` }, 405);
     }
 
     if (env.ASSETS) {
       return env.ASSETS.fetch(request);
     }
 
-    return new Response('Not Found', { status: 404 });
+    return jsonResponse({ error: 'Not found' }, 404);
   },
 };
