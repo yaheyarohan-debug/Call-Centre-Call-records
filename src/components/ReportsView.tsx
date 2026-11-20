@@ -146,7 +146,10 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ records, onOpenRecord 
   const agentChartData = useMemo(
     () =>
       agentBreakdown.slice(0, 12).map((a) => ({
-        agent: a?.agentId !== 'N/A' ? `${a?.agentName ?? ''} (${a?.agentId ?? ''})` : (a?.agentName ?? 'Unknown'),
+        agent:
+          a?.agentId !== 'N/A'
+            ? `${a?.agentName ?? ''} (${a?.agentId ?? ''})`
+            : a?.agentName ?? 'Unknown',
         shortName: a?.agentName ?? 'Unknown',
         avgScore: Number(a?.avgScore) || 0,
         calls: Number(a?.callCount) || 0,
@@ -366,4 +369,367 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ records, onOpenRecord 
               type="number"
               min={0}
               max={100}
-              value
+              value={minScore}
+              onChange={(e) => setMinScore(e.target.value)}
+              placeholder="Min"
+              aria-label="Minimum score"
+              className="w-1/2 rounded-md border border-slate-300 px-2 py-2 font-mono text-xs text-slate-900 focus:border-blue-600 focus:outline-none"
+            />
+            <input
+              type="number"
+              min={0}
+              max={100}
+              value={maxScore}
+              onChange={(e) => setMaxScore(e.target.value)}
+              placeholder="Max"
+              aria-label="Maximum score"
+              className="w-1/2 rounded-md border border-slate-300 px-2 py-2 font-mono text-xs text-slate-900 focus:border-blue-600 focus:outline-none"
+            />
+          </div>
+          <select
+            value={band}
+            onChange={(e) => setBand(e.target.value as 'ALL' | PerformanceBand)}
+            className="rounded-md border border-slate-300 px-3 py-2 text-xs text-slate-900 focus:border-blue-600 focus:outline-none"
+          >
+            <option value="ALL">All Categories</option>
+            <option value="Excellent">Excellent</option>
+            <option value="Good">Good</option>
+            <option value="Average">Average</option>
+            <option value="Poor">Poor</option>
+          </select>
+        </div>
+      </div>
+
+      {/* Report Metrics */}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <div className="rounded-lg border border-slate-200 bg-white p-4">
+          <div className="text-xs font-medium text-slate-500">Matching Evaluated Calls</div>
+          <div className="mt-1 font-mono text-2xl font-semibold tabular-nums text-slate-900">
+            {summary.count}
+          </div>
+        </div>
+        <div className="rounded-lg border border-slate-200 bg-white p-4">
+          <div className="text-xs font-medium text-slate-500">Agents Evaluated</div>
+          <div className="mt-1 font-mono text-2xl font-semibold tabular-nums text-slate-900">
+            {summary.uniqueAgents}
+          </div>
+        </div>
+        <div className="rounded-lg border border-slate-200 bg-white p-4">
+          <div className="text-xs font-medium text-slate-500">Average CQM Score</div>
+          <div className="mt-1 font-mono text-2xl font-semibold tabular-nums text-blue-700">
+            {summary.count > 0 ? `${fmtNum(summary.avg, 1, '0.0')} / 100` : '—'}
+          </div>
+        </div>
+        <div className="rounded-lg border border-slate-200 bg-white p-4">
+          <div className="text-xs font-medium text-slate-500">Confirmed / Pending Critical Findings</div>
+          <div className="mt-1 font-mono text-2xl font-semibold tabular-nums text-red-700">
+            {summary.criticalCount}
+          </div>
+        </div>
+      </div>
+
+      {filteredRecords.length === 0 ? (
+        <div className="rounded-lg border border-slate-200 bg-white p-10 text-center text-sm text-slate-600">
+          No evaluated calls match the selected report period and filters.
+        </div>
+      ) : (
+        <>
+          {/* Agent-Wise Performance Report */}
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+            <div className="rounded-lg border border-slate-200 bg-white p-5 lg:col-span-5">
+              <h2 className="text-sm font-semibold text-slate-900">
+                Agent-Wise Average CQM Score
+              </h2>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Comparison across agents matching current filters
+              </p>
+              <div className="mt-4 h-72">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={agentChartData}
+                    layout="vertical"
+                    margin={{ top: 4, right: 16, left: 16, bottom: 4 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" horizontal={false} />
+                    <XAxis type="number" domain={[0, 100]} tick={{ fontSize: 11, fill: '#475569' }} />
+                    <YAxis
+                      type="category"
+                      dataKey="shortName"
+                      width={110}
+                      tick={{ fontSize: 11, fill: '#334155' }}
+                    />
+                    <Tooltip
+                      contentStyle={{ borderRadius: 8, borderColor: '#E2E8F0', fontSize: 12 }}
+                      formatter={(val, _name, item) => [
+                        `${val} / 100 (${item?.payload?.calls || 0} calls)`,
+                        'Avg CQM Score',
+                      ]}
+                    />
+                    <Bar dataKey="avgScore" radius={[0, 4, 4, 0]}>
+                      {agentChartData.map((entry) => (
+                        <Cell key={entry.agent} fill={getScoreBarColor(entry.avgScore)} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-slate-200 bg-white overflow-x-auto lg:col-span-7">
+              <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+                <div>
+                  <h2 className="text-sm font-semibold text-slate-900">
+                    Agent-Wise Performance Breakdown
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    Score range, category counts, and lowest parameter for targeted coaching
+                  </p>
+                </div>
+              </div>
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50 text-slate-500">
+                    <th className="px-4 py-2.5">Agent</th>
+                    <th className="px-3 py-2.5 text-right">Calls</th>
+                    <th className="px-3 py-2.5 text-right">Avg</th>
+                    <th className="px-3 py-2.5 text-right">Min–Max</th>
+                    <th className="px-3 py-2.5 text-right">Exc / Good / Avg / Poor</th>
+                    <th className="px-3 py-2.5">Weakest Parameter</th>
+                    <th className="px-4 py-2.5 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {agentBreakdown.map((agent) => {
+                    const key = (
+                      agent?.agentId !== 'N/A' ? agent?.agentId ?? '' : agent?.agentName ?? ''
+                    ).toLowerCase();
+                    return (
+                      <tr key={key} className="hover:bg-slate-50/70">
+                        <td className="px-4 py-2.5">
+                          <div className="font-medium text-slate-900">{agent?.agentName ?? '—'}</div>
+                          <div className="font-mono text-[11px] text-slate-500">
+                            {agent?.agentId ?? '—'}
+                          </div>
+                        </td>
+                        <td className="px-3 py-2.5 text-right font-mono tabular-nums text-slate-700">
+                          {agent?.callCount ?? 0}
+                        </td>
+                        <td className="px-3 py-2.5 text-right font-mono font-semibold tabular-nums text-blue-700">
+                          {fmtNum(agent?.avgScore, 1, '0.0')}
+                        </td>
+                        <td className="px-3 py-2.5 text-right font-mono tabular-nums text-slate-600 whitespace-nowrap">
+                          {fmtNum(agent?.minScore, 0, '0')}–{fmtNum(agent?.maxScore, 0, '0')}
+                        </td>
+                        <td className="px-3 py-2.5 text-right font-mono tabular-nums text-slate-700 whitespace-nowrap">
+                          <span className="text-emerald-700">{agent?.excellentCount ?? 0}</span> /{' '}
+                          <span className="text-blue-700">{agent?.goodCount ?? 0}</span> /{' '}
+                          <span className="text-amber-700">{agent?.averageCount ?? 0}</span> /{' '}
+                          <span className="text-red-700">{agent?.poorCount ?? 0}</span>
+                        </td>
+                        <td className="px-3 py-2.5 text-slate-700">
+                          {agent?.weakestParameter ?? '—'}
+                          {agent?.weakestParameterPct !== null &&
+                            agent?.weakestParameterPct !== undefined && (
+                              <span className="font-mono text-slate-500">
+                                {' '}
+                                ({fmtNum(agent.weakestParameterPct, 0, '0')}%)
+                              </span>
+                            )}
+                        </td>
+                        <td className="px-4 py-2.5 text-right whitespace-nowrap">
+                          <div className="inline-flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setSelectedAgentKey(selectedAgentKey === key ? 'ALL' : key)
+                              }
+                              className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+                            >
+                              {selectedAgentKey === key ? 'Show All' : 'Focus'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleExportAgent(
+                                  agent?.agentId ?? 'N/A',
+                                  agent?.agentName ?? 'Agent'
+                                )
+                              }
+                              title="Export Agent Report to Excel"
+                              className="inline-flex items-center gap-1 rounded border border-blue-200 bg-blue-50 px-2 py-1 text-[11px] font-medium text-blue-700 hover:bg-blue-100"
+                            >
+                              <Download className="h-3 w-3" />
+                              <span>Excel</span>
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Parameter Performance Chart + Table */}
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+            <div className="rounded-lg border border-slate-200 bg-white p-5 lg:col-span-7">
+              <h2 className="text-sm font-semibold text-slate-900">
+                CQM Parameter Average Attainment (%)
+              </h2>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Excludes parameters marked Not Assessable
+              </p>
+              <div className="mt-4 h-80">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={parameterBreakdown}
+                    layout="vertical"
+                    margin={{ top: 4, right: 16, left: 32, bottom: 4 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" horizontal={false} />
+                    <XAxis
+                      type="number"
+                      domain={[0, 100]}
+                      tick={{ fontSize: 11, fill: '#475569' }}
+                      unit="%"
+                    />
+                    <YAxis
+                      type="category"
+                      dataKey="parameter"
+                      width={120}
+                      tick={{ fontSize: 11, fill: '#334155' }}
+                    />
+                    <Tooltip
+                      contentStyle={{ borderRadius: 8, borderColor: '#E2E8F0', fontSize: 12 }}
+                      formatter={(val) => [`${val}%`, 'Avg Attainment']}
+                    />
+                    <Bar dataKey="avgPct" fill="#1D4ED8" radius={[0, 4, 4, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-slate-200 bg-white overflow-x-auto lg:col-span-5">
+              <div className="border-b border-slate-200 px-5 py-4">
+                <h2 className="text-sm font-semibold text-slate-900">Parameter Summary Table</h2>
+              </div>
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50 text-slate-500">
+                    <th className="px-4 py-2.5">Parameter</th>
+                    <th className="px-3 py-2.5 text-right">Weight</th>
+                    <th className="px-3 py-2.5 text-right">Avg Marks</th>
+                    <th className="px-4 py-2.5 text-right">Avg %</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {parameterBreakdown.map((p) => (
+                    <tr key={p.parameter}>
+                      <td className="px-4 py-2.5 font-medium text-slate-900">{p.parameter}</td>
+                      <td className="px-3 py-2.5 text-right font-mono tabular-nums text-slate-600">
+                        {p.maxMarks}
+                      </td>
+                      <td className="px-3 py-2.5 text-right font-mono tabular-nums text-slate-900">
+                        {fmtNum(p.avgMarks, 1, '0.0')}
+                      </td>
+                      <td className="px-4 py-2.5 text-right font-mono font-semibold tabular-nums text-blue-700">
+                        {fmtNum(p.avgPct, 1, '0.0')}%
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Matching Calls Register */}
+          <div className="rounded-lg border border-slate-200 bg-white overflow-x-auto">
+            <div className="border-b border-slate-200 px-5 py-4">
+              <h2 className="text-sm font-semibold text-slate-900">
+                Calls Included in Report ({filteredRecords.length})
+              </h2>
+              <p className="text-xs text-slate-500">
+                Open any call scorecard or export an individual 4-sheet workbook (Call Summary, CQM Scorecard, Feedback, Transcription)
+              </p>
+            </div>
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50 text-slate-500">
+                  <th className="px-5 py-2.5">Call Ref</th>
+                  <th className="px-4 py-2.5">Agent</th>
+                  <th className="px-4 py-2.5">Call Date</th>
+                  <th className="px-4 py-2.5 text-right">Duration</th>
+                  <th className="px-4 py-2.5 text-right">Final Score</th>
+                  <th className="px-4 py-2.5">Band</th>
+                  <th className="px-4 py-2.5">Review</th>
+                  <th className="px-5 py-2.5 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {filteredRecords.map((rec) => (
+                  <tr key={rec.id} className="hover:bg-slate-50/70">
+                    <td className="px-5 py-2.5 font-mono font-semibold text-slate-900 whitespace-nowrap">
+                      {rec?.metadata?.callReference ?? '—'}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <span className="font-medium text-slate-900">
+                        {rec?.metadata?.agentName ?? '—'}
+                      </span>{' '}
+                      <span className="font-mono text-slate-500">
+                        ({rec?.metadata?.agentId ?? '—'})
+                      </span>
+                    </td>
+                    <td className="px-4 py-2.5 font-mono tabular-nums text-slate-600 whitespace-nowrap">
+                      {rec?.metadata?.callDate ?? '—'}
+                    </td>
+                    <td className="px-4 py-2.5 text-right font-mono tabular-nums text-slate-600 whitespace-nowrap">
+                      {formatDuration(Number(rec?.metadata?.durationSeconds) || 0)}
+                    </td>
+                    <td className="px-4 py-2.5 text-right font-mono font-semibold tabular-nums text-slate-900 whitespace-nowrap">
+                      {fmtNum(rec?.overallScore, 1, '—')}
+                    </td>
+                    <td
+                      className={`px-4 py-2.5 font-semibold whitespace-nowrap ${getBandTextClass(
+                        rec?.performanceBand ?? ''
+                      )}`}
+                    >
+                      {rec?.performanceBand ?? '—'}
+                    </td>
+                    <td className="px-4 py-2.5 text-slate-600 whitespace-nowrap">
+                      {rec?.reviewState === 'finalised'
+                        ? 'Finalised'
+                        : rec?.reviewState === 'evaluator_reviewed'
+                        ? 'Reviewed'
+                        : 'AI Draft'}
+                    </td>
+                    <td className="px-5 py-2.5 text-right whitespace-nowrap">
+                      <div className="inline-flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => onOpenRecord(rec.id, 'evaluation')}
+                          className="rounded border border-blue-200 bg-blue-50 px-2.5 py-1 font-medium text-blue-700 hover:bg-blue-100"
+                        >
+                          Scorecard
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => exportSingleEvaluationToExcel(rec)}
+                          title="Export 4-sheet Excel workbook"
+                          className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-1 font-medium text-slate-700 hover:bg-slate-50"
+                        >
+                          <Download className="h-3 w-3" />
+                          <span>4-Sheet .xlsx</span>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
