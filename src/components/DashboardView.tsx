@@ -36,6 +36,11 @@ const BAND_COLORS: Record<string, string> = {
   Poor: '#DC2626',
 };
 
+function fmtNum(val: unknown, digits = 1, fallback = '0.0'): string {
+  const n = typeof val === 'number' ? val : Number(val);
+  return Number.isFinite(n) ? n.toFixed(digits) : fallback;
+}
+
 function getBandTextClass(band: string): string {
   switch (band) {
     case 'Excellent':
@@ -50,9 +55,9 @@ function getBandTextClass(band: string): string {
 }
 
 function getRecordDate(r: CallEvaluationRecord): Date {
-  const raw = r.metadata.callDate || r.createdAt;
+  const raw = r?.metadata?.callDate || r?.createdAt || '';
   const d = new Date(raw.length === 10 ? `${raw}T12:00:00` : raw);
-  return Number.isNaN(d.getTime()) ? new Date(r.createdAt) : d;
+  return Number.isNaN(d.getTime()) ? new Date(r?.createdAt || Date.now()) : d;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -63,22 +68,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onNavigateReports,
 }) => {
   const [scope, setScope] = useState<DashboardScope>('all');
+  const safeRecords = Array.isArray(records) ? records : [];
 
   const scopedRecords = useMemo(() => {
-    if (scope === 'all') return records;
+    if (scope === 'all') return safeRecords;
     const now = Date.now();
     const windowMs = (scope === 'weekly' ? 7 : 30) * 24 * 60 * 60 * 1000;
-    return records.filter((r) => now - getRecordDate(r).getTime() <= windowMs);
-  }, [records, scope]);
+    return safeRecords.filter((r) => now - getRecordDate(r).getTime() <= windowMs);
+  }, [safeRecords, scope]);
 
   const evaluatedRecords = useMemo(
-    () => scopedRecords.filter((r) => r.scorecard.length > 0),
+    () => scopedRecords.filter((r) => Array.isArray(r?.scorecard) && r.scorecard.length > 0),
     [scopedRecords]
   );
 
   const allEvaluatedRecords = useMemo(
-    () => records.filter((r) => r.scorecard.length > 0),
-    [records]
+    () => safeRecords.filter((r) => Array.isArray(r?.scorecard) && r.scorecard.length > 0),
+    [safeRecords]
   );
 
   const stats = useMemo(() => {
@@ -86,8 +92,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     const pendingEval = scopedRecords.length - total;
     const avg =
       total > 0
-        ? Math.round((evaluatedRecords.reduce((sum, r) => sum + r.overallScore, 0) / total) * 10) /
-          10
+        ? Math.round(
+            (evaluatedRecords.reduce((sum, r) => sum + (Number(r?.overallScore) || 0), 0) /
+              total) *
+              10
+          ) / 10
         : 0;
     const excellent = evaluatedRecords.filter((r) => r.performanceBand === 'Excellent').length;
     const good = evaluatedRecords.filter((r) => r.performanceBand === 'Good').length;
@@ -106,9 +115,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     [stats]
   );
 
-  // Weekly Performance Chart:
-  // - In Weekly Dashboard mode: daily breakdown across matching 7-day calls
-  // - Otherwise: ISO weekly trend across evaluated calls
   const weeklyData = useMemo(() => {
     if (scope === 'weekly') {
       const map = new Map<string, { label: string; total: number; count: number }>();
@@ -120,7 +126,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           total: 0,
           count: 0,
         };
-        existing.total += r.overallScore;
+        existing.total += Number(r?.overallScore) || 0;
         existing.count += 1;
         map.set(key, existing);
       }
@@ -142,7 +148,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       monday.setDate(diff);
       const key = monday.toISOString().slice(0, 10);
       const existing = map.get(key) || { label: key.slice(5), total: 0, count: 0 };
-      existing.total += r.overallScore;
+      existing.total += Number(r?.overallScore) || 0;
       existing.count += 1;
       map.set(key, existing);
     }
@@ -156,8 +162,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       }));
   }, [scope, evaluatedRecords, allEvaluatedRecords]);
 
-  // Monthly Performance Chart:
-  // Shows monthly averages across evaluated calls
   const monthlyData = useMemo(() => {
     const source = scope === 'monthly' ? evaluatedRecords : allEvaluatedRecords;
     const map = new Map<string, { label: string; total: number; count: number }>();
@@ -169,7 +173,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         total: 0,
         count: 0,
       };
-      existing.total += r.overallScore;
+      existing.total += Number(r?.overallScore) || 0;
       existing.count += 1;
       map.set(key, existing);
     }
@@ -183,10 +187,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       }));
   }, [scope, evaluatedRecords, allEvaluatedRecords]);
 
-  const agentSnapshot = useMemo(
-    () => computeAgentPerformanceRows(evaluatedRecords).slice(0, 5),
-    [evaluatedRecords]
-  );
+  const agentSnapshot = useMemo(() => {
+    try {
+      const rows = computeAgentPerformanceRows(evaluatedRecords);
+      return Array.isArray(rows) ? rows.slice(0, 5) : [];
+    } catch {
+      return [];
+    }
+  }, [evaluatedRecords]);
 
   const recentRecords = scopedRecords.slice(0, 8);
 
@@ -261,9 +269,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <div className="rounded-lg border border-slate-200 bg-white p-4">
           <div className="text-xs font-medium text-slate-500">Average CQM Score</div>
           <div className="mt-2 font-mono text-2xl font-semibold tabular-nums text-blue-700">
-           {(stats?.total ?? 0) > 0 && Number.isFinite(Number(stats?.avg))
-  ? Number(stats.avg).toFixed(1)
-  : '—'}
+            {stats.total > 0 ? fmtNum(stats.avg, 1, '—') : '—'}
           </div>
           <div className="mt-1 text-xs text-slate-500">Out of 100 marks</div>
         </div>
@@ -302,7 +308,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       </div>
 
       {/* Empty State vs Charts */}
-      {records.length === 0 ? (
+      {safeRecords.length === 0 ? (
         <div className="rounded-lg border border-slate-200 bg-white p-10 text-center">
           <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
             <FileAudio className="h-6 w-6" />
@@ -464,30 +470,30 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {agentSnapshot.map((agent) => (
-                      <tr key={`${agent.agentId}-${agent.agentName}`} className="hover:bg-slate-50/70">
+                      <tr key={`${agent?.agentId ?? ''}-${agent?.agentName ?? ''}`} className="hover:bg-slate-50/70">
                         <td className="px-5 py-2.5">
-                          <span className="font-medium text-slate-900">{agent.agentName}</span>{' '}
-                          <span className="font-mono text-slate-500">· {agent.agentId}</span>
+                          <span className="font-medium text-slate-900">{agent?.agentName ?? '—'}</span>{' '}
+                          <span className="font-mono text-slate-500">· {agent?.agentId ?? '—'}</span>
                         </td>
                         <td className="px-4 py-2.5 text-right font-mono tabular-nums text-slate-700">
-                          {agent.callCount}
+                          {agent?.callCount ?? 0}
                         </td>
                         <td className="px-4 py-2.5 text-right font-mono font-semibold tabular-nums text-blue-700">
-                          {agent.avgScore.toFixed(1)}
+                          {fmtNum(agent?.avgScore, 1, '0.0')}
                         </td>
                         <td className="px-4 py-2.5 text-right font-mono tabular-nums text-slate-600">
-                          {agent.minScore.toFixed(0)}–{agent.maxScore.toFixed(0)}
+                          {fmtNum(agent?.minScore, 0, '0')}–{fmtNum(agent?.maxScore, 0, '0')}
                         </td>
                         <td className="px-4 py-2.5 text-right font-mono tabular-nums text-emerald-700">
-                          {agent.excellentCount}
+                          {agent?.excellentCount ?? 0}
                         </td>
                         <td className="px-4 py-2.5 text-right font-mono tabular-nums text-red-700">
-                          {agent.poorCount}
+                          {agent?.poorCount ?? 0}
                         </td>
                         <td className="px-5 py-2.5 text-slate-600">
-                          {agent.weakestParameter}
-                          {agent.weakestParameterPct !== null
-                            ? ` (${agent.weakestParameterPct.toFixed(0)}%)`
+                          {agent?.weakestParameter ?? '—'}
+                          {agent?.weakestParameterPct !== null && agent?.weakestParameterPct !== undefined
+                            ? ` (${fmtNum(agent.weakestParameterPct, 0, '0')}%)`
                             : ''}
                         </td>
                       </tr>
@@ -533,43 +539,46 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {recentRecords.map((rec) => {
-                    const isEvaluated = rec.scorecard.length > 0;
+                    const isEvaluated = Array.isArray(rec?.scorecard) && rec.scorecard.length > 0;
+                    const langs = Array.isArray(rec?.transcription?.detectedLanguages)
+                      ? rec.transcription.detectedLanguages.join(' · ')
+                      : '';
                     return (
                       <tr key={rec.id} className="hover:bg-slate-50/80 transition-colors">
                         <td className="px-5 py-3 font-mono text-xs font-medium text-slate-900 whitespace-nowrap">
-                          {rec.metadata.callReference}
+                          {rec?.metadata?.callReference ?? '—'}
                         </td>
                         <td className="px-4 py-3">
-                          <div className="font-medium text-slate-900">{rec.metadata.agentName}</div>
+                          <div className="font-medium text-slate-900">{rec?.metadata?.agentName ?? '—'}</div>
                           <div className="font-mono text-xs text-slate-500">
-                            {rec.metadata.agentId}
+                            {rec?.metadata?.agentId ?? '—'}
                           </div>
                         </td>
                         <td className="px-4 py-3 font-mono text-xs tabular-nums text-slate-600 whitespace-nowrap">
-                          {rec.metadata.callDate}
+                          {rec?.metadata?.callDate ?? '—'}
                         </td>
                         <td className="px-4 py-3 text-xs text-slate-600">
-                          {rec.transcription.detectedLanguages.join(' · ') || '—'}
+                          {langs || '—'}
                         </td>
                         <td className="px-4 py-3 text-right font-mono text-xs tabular-nums text-slate-600 whitespace-nowrap">
-                          {formatDuration(rec.metadata.durationSeconds)}
+                          {formatDuration(rec?.metadata?.durationSeconds ?? 0)}
                         </td>
                         <td className="px-4 py-3 text-right font-mono text-sm font-semibold tabular-nums text-slate-900 whitespace-nowrap">
-                          {isEvaluated ? rec.overallScore.toFixed(1) : '—'}
+                          {isEvaluated ? fmtNum(rec?.overallScore, 1, '—') : '—'}
                         </td>
                         <td
                           className={`px-4 py-3 text-xs font-semibold whitespace-nowrap ${
-                            isEvaluated ? getBandTextClass(rec.performanceBand) : 'text-slate-500'
+                            isEvaluated ? getBandTextClass(rec?.performanceBand ?? '') : 'text-slate-500'
                           }`}
                         >
-                          {isEvaluated ? rec.performanceBand : 'Transcript Only'}
+                          {isEvaluated ? (rec?.performanceBand ?? '—') : 'Transcript Only'}
                         </td>
                         <td className="px-4 py-3 text-xs text-slate-600 whitespace-nowrap">
                           {!isEvaluated
                             ? 'Pending Evaluation'
-                            : rec.reviewState === 'finalised'
+                            : rec?.reviewState === 'finalised'
                             ? 'Evaluator Finalised'
-                            : rec.reviewState === 'evaluator_reviewed'
+                            : rec?.reviewState === 'evaluator_reviewed'
                             ? 'Reviewed'
                             : 'AI Draft'}
                         </td>
