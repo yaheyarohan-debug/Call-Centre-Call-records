@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "call-centre-call-records",
+  "name": "call-centre-records-v2",
   "main": "src/worker.ts",
   "compatibility_date": "2026-05-01",
   "assets": {
