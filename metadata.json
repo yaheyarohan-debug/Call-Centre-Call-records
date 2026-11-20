@@ -1,0 +1,6 @@
+{
+  "name": "AI FNOL Call Quality Monitoring System",
+  "description": "Multilingual insurance FNOL call transcription (Singlish, English, Tamil) and automated Contact Centre Quality Monitoring scorecard evaluation workbench.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
