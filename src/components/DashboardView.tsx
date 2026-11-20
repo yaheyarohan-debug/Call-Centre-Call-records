@@ -261,7 +261,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <div className="rounded-lg border border-slate-200 bg-white p-4">
           <div className="text-xs font-medium text-slate-500">Average CQM Score</div>
           <div className="mt-2 font-mono text-2xl font-semibold tabular-nums text-blue-700">
-            {stats.total > 0 ? stats.avg.toFixed(1) : '—'}
+           {(stats?.total ?? 0) > 0 && Number.isFinite(Number(stats?.avg))
+  ? Number(stats.avg).toFixed(1)
+  : '—'}
           </div>
           <div className="mt-1 text-xs text-slate-500">Out of 100 marks</div>
         </div>
