@@ -2,11 +2,10 @@ import React, { useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
-  Download,
   FileSpreadsheet,
   Lock,
+  MessageSquareWarning,
   Play,
-  ShieldAlert,
   ThumbsDown,
   ThumbsUp,
 } from 'lucide-react';
@@ -40,6 +39,11 @@ const STATUS_OPTIONS: EvaluationStatus[] = [
   'Failed',
   'Not Assessable',
 ];
+
+function fmtNum(val: unknown, digits = 1, fallback = '0.0'): string {
+  const n = typeof val === 'number' ? val : Number(val);
+  return Number.isFinite(n) ? n.toFixed(digits) : fallback;
+}
 
 function getStatusClasses(status: EvaluationStatus): string {
   switch (status) {
@@ -101,15 +105,31 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
     );
   }
 
-  if (record.scorecard.length === 0) {
+  const scorecardList = Array.isArray(record.scorecard) ? record.scorecard : [];
+  const transcriptSegments = Array.isArray(record.transcription?.segments)
+    ? record.transcription.segments
+    : [];
+  const detectedLanguages = Array.isArray(record.transcription?.detectedLanguages)
+    ? record.transcription.detectedLanguages
+    : [];
+  const fnolChecksList = Array.isArray(record.fnolChecks) ? record.fnolChecks : [];
+  const criticalFindingsList = Array.isArray(record.criticalFindings)
+    ? record.criticalFindings
+    : [];
+
+  if (scorecardList.length === 0) {
     return (
       <div className="rounded-lg border border-slate-200 bg-white p-10 text-center space-y-4">
         <h2 className="text-lg font-semibold text-slate-900">
           Transcript Ready — CQM Scorecard Not Yet Run
         </h2>
         <p className="mx-auto max-w-lg text-sm text-slate-600">
-          Call <span className="font-mono font-semibold text-slate-800">{record.metadata.callReference}</span> has{' '}
-          <span className="font-mono">{record.transcription.segments.length}</span> transcribed segments. Review or edit the transcript, then run the 11-parameter FNOL CQM evaluation.
+          Call{' '}
+          <span className="font-mono font-semibold text-slate-800">
+            {record?.metadata?.callReference ?? '—'}
+          </span>{' '}
+          has <span className="font-mono">{transcriptSegments.length}</span> transcribed segments.
+          Review or edit the transcript, then run the 11-parameter FNOL CQM evaluation.
         </p>
         <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
           <button
@@ -140,13 +160,16 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
       Math.round(
         nextScorecard.reduce((sum, item) => {
           if (item.status === 'Not Assessable' && item.evaluatorMarks === null) return sum;
-          const eff = item.evaluatorMarks !== null ? item.evaluatorMarks : item.awardedMarks;
+          const eff =
+            item.evaluatorMarks !== null && item.evaluatorMarks !== undefined
+              ? Number(item.evaluatorMarks) || 0
+              : Number(item.awardedMarks) || 0;
           return sum + eff;
         }, 0) * 10
       ) / 10;
 
     const assessedMaxMarks = nextScorecard.reduce(
-      (sum, item) => sum + (item.status === 'Not Assessable' ? 0 : item.maxMarks),
+      (sum, item) => sum + (item.status === 'Not Assessable' ? 0 : Number(item.maxMarks) || 0),
       0
     );
 
@@ -172,7 +195,7 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
   };
 
   const handleParamScoreChange = (paramId: string, rawVal: string) => {
-    const nextScorecard = record.scorecard.map((item) => {
+    const nextScorecard = scorecardList.map((item) => {
       if (item.parameterId !== paramId) return item;
       if (rawVal === '') {
         return {
@@ -181,7 +204,7 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
           reviewDecision: 'pending' as const,
         };
       }
-      const num = Math.max(0, Math.min(item.maxMarks, Number(rawVal)));
+      const num = Math.max(0, Math.min(Number(item.maxMarks) || 0, Number(rawVal)));
       const rounded = Number.isFinite(num) ? Math.round(num * 10) / 10 : 0;
       let nextStatus = item.status;
       if (item.status === 'Not Assessable') {
@@ -200,7 +223,7 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
   };
 
   const handleResetParamScore = (paramId: string) => {
-    const nextScorecard = record.scorecard.map((item) => {
+    const nextScorecard = scorecardList.map((item) => {
       if (item.parameterId !== paramId) return item;
       return {
         ...item,
@@ -212,7 +235,7 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
   };
 
   const handleParamStatusChange = (paramId: string, nextStatus: EvaluationStatus) => {
-    const nextScorecard = record.scorecard.map((item) => {
+    const nextScorecard = scorecardList.map((item) => {
       if (item.parameterId !== paramId) return item;
       return {
         ...item,
@@ -224,11 +247,8 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
     recalcAndSave(nextScorecard);
   };
 
-  const handleParamDecision = (
-    paramId: string,
-    decision: 'confirmed' | 'rejected'
-  ) => {
-    const nextScorecard = record.scorecard.map((item) => {
+  const handleParamDecision = (paramId: string, decision: 'confirmed' | 'rejected') => {
+    const nextScorecard = scorecardList.map((item) => {
       if (item.parameterId !== paramId) return item;
       return {
         ...item,
@@ -240,14 +260,14 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
   };
 
   const handleParamComment = (paramId: string, comment: string) => {
-    const nextScorecard = record.scorecard.map((item) =>
+    const nextScorecard = scorecardList.map((item) =>
       item.parameterId === paramId ? { ...item, evaluatorComment: comment } : item
     );
     recalcAndSave(nextScorecard);
   };
 
   const handleFindingDecision = (findingId: string, status: 'confirmed' | 'rejected') => {
-    const nextFindings = record.criticalFindings.map((f) =>
+    const nextFindings = criticalFindingsList.map((f) =>
       f.id === findingId ? { ...f, status } : f
     );
     onUpdateRecord({
@@ -259,7 +279,7 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
   };
 
   const handleRuleVerify = (ruleId: string, confirmed: boolean) => {
-    const nextChecks = record.fnolChecks.map((c) =>
+    const nextChecks = fnolChecksList.map((c) =>
       c.ruleId === ruleId
         ? {
             ...c,
@@ -276,8 +296,17 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
     });
   };
 
+  const handleCoachingNotesChange = (notes: string) => {
+    onUpdateRecord({
+      ...record,
+      coachingNotes: notes,
+      reviewState: record.reviewState === 'finalised' ? 'finalised' : 'evaluator_reviewed',
+      updatedAt: new Date().toISOString(),
+    });
+  };
+
   const handleFinalise = () => {
-    const confirmedScorecard = record.scorecard.map((p) => ({
+    const confirmedScorecard = scorecardList.map((p) => ({
       ...p,
       reviewDecision: p.reviewDecision === 'pending' ? ('confirmed' as const) : p.reviewDecision,
       needsHumanReview: false,
@@ -285,7 +314,7 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
     recalcAndSave(confirmedScorecard, {
       reviewState: 'finalised',
       finalisedAt: new Date().toISOString(),
-      finalisedBy: record.metadata.evaluatorName || 'Quality Checker',
+      finalisedBy: record?.metadata?.evaluatorName || 'Quality Checker',
     });
   };
 
@@ -303,12 +332,12 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
         <div>
           <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
             <span className="font-mono font-semibold text-slate-800">
-              {record.metadata.callReference}
+              {record?.metadata?.callReference ?? '—'}
             </span>
             <span aria-hidden="true">·</span>
             <span>
               {isFinalised
-                ? `Finalised by ${record.finalisedBy}`
+                ? `Finalised by ${record?.finalisedBy || 'Quality Checker'}`
                 : record.reviewState === 'evaluator_reviewed'
                 ? 'Evaluator Review In Progress'
                 : 'AI-Generated Assessment (Pending Evaluator Confirmation)'}
@@ -350,8 +379,8 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
       {/* Audio Player */}
       <AudioPlayerBar
         audioUrl={audioUrl}
-        fileName={record.metadata.fileName}
-        durationSeconds={record.metadata.durationSeconds}
+        fileName={record?.metadata?.fileName ?? 'recording'}
+        durationSeconds={Number(record?.metadata?.durationSeconds) || 0}
         seekRequest={seekRequest}
         onDeleteAudio={audioUrl ? onDeleteAudio : undefined}
         compact
@@ -365,16 +394,16 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
             <span className="text-xs text-slate-500">
               AI Score:{' '}
               <span className="font-mono font-semibold tabular-nums text-slate-800">
-                {record.aiOverallScore.toFixed(1)}
+                {fmtNum(record?.aiOverallScore, 1, '0.0')}
               </span>
             </span>
             <span aria-hidden="true" className="text-slate-300">|</span>
             <span
               className={`rounded border px-2.5 py-1 text-xs font-semibold ${getBandClasses(
-                record.performanceBand
+                record?.performanceBand ?? ''
               )}`}
             >
-              {record.performanceBand}
+              {record?.performanceBand ?? '—'}
             </span>
           </div>
         </div>
@@ -383,23 +412,23 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
           <div>
             <div className="text-xs text-slate-500">Agent Name</div>
             <div className="mt-1 text-sm font-semibold text-slate-900">
-              {record.metadata.agentName}
+              {record?.metadata?.agentName ?? '—'}
             </div>
-            <div className="font-mono text-xs text-slate-500">{record.metadata.agentId}</div>
+            <div className="font-mono text-xs text-slate-500">{record?.metadata?.agentId ?? '—'}</div>
           </div>
 
           <div>
             <div className="text-xs text-slate-500">Call Reference</div>
             <div className="mt-1 font-mono text-sm font-semibold text-slate-900">
-              {record.metadata.callReference}
+              {record?.metadata?.callReference ?? '—'}
             </div>
-            <div className="font-mono text-xs text-slate-500">{record.metadata.callDate}</div>
+            <div className="font-mono text-xs text-slate-500">{record?.metadata?.callDate ?? '—'}</div>
           </div>
 
           <div>
             <div className="text-xs text-slate-500">Call Duration</div>
             <div className="mt-1 font-mono text-sm font-semibold tabular-nums text-slate-900">
-              {formatDuration(record.metadata.durationSeconds)}
+              {formatDuration(Number(record?.metadata?.durationSeconds) || 0)}
             </div>
             <div className="text-xs text-slate-500">FNOL Call</div>
           </div>
@@ -407,17 +436,17 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
           <div className="col-span-2 sm:col-span-1 lg:col-span-2">
             <div className="text-xs text-slate-500">Detected Languages</div>
             <div className="mt-1 text-sm font-medium text-slate-900">
-              {record.transcription.detectedLanguages.join(', ') || 'Not specified'}
+              {detectedLanguages.join(', ') || 'Not specified'}
             </div>
             <div className="text-xs text-slate-500">
-              Evaluator: {record.metadata.evaluatorName}
+              Evaluator: {record?.metadata?.evaluatorName ?? '—'}
             </div>
           </div>
 
           <div>
             <div className="text-xs text-slate-500">Assessed Weight</div>
             <div className="mt-1 font-mono text-sm font-semibold tabular-nums text-slate-900">
-              {record.assessedMaxMarks} / 100
+              {Number(record?.assessedMaxMarks) || 100} / 100
             </div>
             <div className="text-xs text-slate-500">Excl. Not Assessable</div>
           </div>
@@ -425,7 +454,7 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
           <div>
             <div className="text-xs text-slate-500">Final CQM Score</div>
             <div className="mt-1 font-mono text-2xl font-bold tabular-nums text-blue-700">
-              {record.overallScore.toFixed(1)}
+              {fmtNum(record?.overallScore, 1, '0.0')}
               <span className="text-sm font-normal text-slate-500"> / 100</span>
             </div>
           </div>
@@ -435,7 +464,8 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
           <div className="mt-4 flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50/80 px-3.5 py-2.5 text-xs text-amber-900">
             <AlertTriangle className="h-4 w-4 shrink-0 text-amber-700" />
             <span>
-              One or more parameters are marked <strong>Not Assessable</strong> or require <strong>manual MCC system verification</strong>. Review flagged items below before finalising.
+              One or more parameters are marked <strong>Not Assessable</strong> or require{' '}
+              <strong>manual MCC system verification</strong>. Review flagged items below before finalising.
             </span>
           </div>
         )}
@@ -446,7 +476,7 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
         <div className="flex items-center justify-between px-5 py-3.5">
           <div>
             <h2 className="text-sm font-semibold text-slate-900">
-              B. Chronological Transcript ({record.transcription.segments.length} turns)
+              B. Chronological Transcript ({transcriptSegments.length} turns)
             </h2>
             <p className="text-xs text-slate-500">
               Sinhala displayed in Singlish · Click timestamps to verify audio directly
@@ -472,7 +502,7 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
 
         {showTranscriptInline && (
           <div className="max-h-80 overflow-y-auto border-t border-slate-200 divide-y divide-slate-100 px-5 py-2">
-            {record.transcription.segments.map((seg) => (
+            {transcriptSegments.map((seg) => (
               <div key={seg.id} className="py-2.5 text-sm">
                 <div className="flex items-center gap-2 text-xs text-slate-500">
                   <button
@@ -507,14 +537,17 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
             </p>
           </div>
           <div className="font-mono text-xs tabular-nums text-slate-600">
-            AI Total: {record.aiOverallScore.toFixed(1)} · Final Total: {record.overallScore.toFixed(1)} / 100
+            AI Total: {fmtNum(record?.aiOverallScore, 1, '0.0')} · Final Total:{' '}
+            {fmtNum(record?.overallScore, 1, '0.0')} / 100
           </div>
         </div>
 
         <div className="divide-y divide-slate-200">
-          {record.scorecard.map((param) => {
+          {scorecardList.map((param) => {
             const effectiveScore =
-              param.evaluatorMarks !== null ? param.evaluatorMarks : param.awardedMarks;
+              param.evaluatorMarks !== null && param.evaluatorMarks !== undefined
+                ? param.evaluatorMarks
+                : param.awardedMarks;
 
             return (
               <div
@@ -553,16 +586,14 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
                     <div className="text-right">
                       <div className="text-[11px] text-slate-500">AI Marks</div>
                       <div className="font-mono text-sm font-semibold tabular-nums text-slate-700">
-                        {param.awardedMarks} / {param.maxMarks}
+                        {fmtNum(param.awardedMarks, 1, '0.0')} / {param.maxMarks}
                       </div>
                     </div>
 
                     <div>
                       <div className="flex items-center justify-between gap-2">
-                        <label className="block text-[11px] text-slate-500">
-                          Final Marks
-                        </label>
-                        {param.evaluatorMarks !== null && (
+                        <label className="block text-[11px] text-slate-500">Final Marks</label>
+                        {param.evaluatorMarks !== null && param.evaluatorMarks !== undefined && (
                           <button
                             type="button"
                             onClick={() => handleResetParamScore(param.parameterId)}
@@ -578,7 +609,7 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
                         max={param.maxMarks}
                         step={0.5}
                         value={
-                          param.evaluatorMarks !== null
+                          param.evaluatorMarks !== null && param.evaluatorMarks !== undefined
                             ? param.evaluatorMarks
                             : param.awardedMarks
                         }
@@ -636,9 +667,7 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
                   </div>
 
                   <div>
-                    <div className="font-semibold text-slate-700">
-                      Recommended Improvement
-                    </div>
+                    <div className="font-semibold text-slate-700">Recommended Improvement</div>
                     <p className="mt-1 text-slate-600">
                       {param.recommendedImprovement || 'No improvement needed.'}
                     </p>
@@ -649,7 +678,7 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
                 <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
                   <input
                     type="text"
-                    value={param.evaluatorComment}
+                    value={param.evaluatorComment || ''}
                     onChange={(e) => handleParamComment(param.parameterId, e.target.value)}
                     placeholder="Add evaluator review comment or MCC check note..."
                     className="min-w-[260px] flex-1 rounded border border-slate-200 px-3 py-1.5 text-xs text-slate-800 focus:border-blue-600 focus:outline-none"
@@ -672,7 +701,7 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
                       }`}
                     >
                       <ThumbsUp className="h-3 w-3" />
-                      <span>Confirm ({effectiveScore})</span>
+                      <span>Confirm ({fmtNum(effectiveScore, 1, '0.0')})</span>
                     </button>
                     <button
                       type="button"
@@ -716,7 +745,7 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {record.fnolChecks.map((chk) => (
+              {fnolChecksList.map((chk) => (
                 <tr key={chk.ruleId}>
                   <td className="px-5 py-3 font-medium text-slate-900">{chk.ruleTitle}</td>
                   <td className="px-4 py-3 font-semibold whitespace-nowrap">
@@ -779,63 +808,49 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
         {/* Critical Findings */}
         <div className="rounded-lg border border-slate-200 bg-white p-5">
           <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
-            <ShieldAlert className="h-4 w-4 text-red-700" />
+            <MessageSquareWarning className="h-4 w-4 text-red-700" />
             <h2 className="text-sm font-semibold text-slate-900">
-              E1. Critical Findings ({record.criticalFindings.length})
+              E. Critical Findings ({criticalFindingsList.length})
             </h2>
           </div>
 
-          {record.criticalFindings.length === 0 ? (
-            <p className="mt-4 text-sm text-slate-600">
-              No major process failures or data protection breaches identified in this call.
+          {criticalFindingsList.length === 0 ? (
+            <p className="mt-4 text-xs text-slate-500">
+              No critical findings flagged for this call.
             </p>
           ) : (
             <div className="mt-4 space-y-3">
-              {record.criticalFindings.map((finding) => (
+              {criticalFindingsList.map((f) => (
                 <div
-                  key={finding.id}
-                  className="rounded-md border border-slate-200 bg-slate-50/70 p-3.5 text-xs"
+                  key={f.id}
+                  className="rounded-md border border-slate-200 bg-slate-50/60 p-3 text-xs space-y-2"
                 >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="font-semibold text-slate-900">
-                      {finding.category} ·{' '}
-                      <span
-                        className={
-                          finding.severity === 'High' ? 'text-red-700' : 'text-amber-700'
-                        }
-                      >
-                        {finding.severity} Severity
-                      </span>
-                    </span>
-                    <span className="font-mono text-slate-500">{finding.timestamp}</span>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-slate-900">{f.title}</span>
+                    <span className="font-mono text-[11px] text-slate-500">{f.timestamp}</span>
                   </div>
-                  <p className="mt-1.5 text-slate-800">{finding.description}</p>
-                  {finding.evidence && (
-                    <p className="mt-1 italic text-slate-600">Evidence: {finding.evidence}</p>
-                  )}
-                  <div className="mt-2.5 flex items-center justify-between">
-                    <span className="text-slate-500">
-                      Status: <strong className="capitalize text-slate-800">{finding.status}</strong>
-                    </span>
-                    <div className="flex gap-1.5">
+                  <p className="text-slate-600">{f.description}</p>
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-slate-500 capitalize">Status: {f.status}</span>
+                    <div className="flex items-center gap-1.5">
                       <button
                         type="button"
-                        onClick={() => handleFindingDecision(finding.id, 'confirmed')}
-                        className={`rounded border px-2 py-1 font-medium ${
-                          finding.status === 'confirmed'
+                        onClick={() => handleFindingDecision(f.id, 'confirmed')}
+                        className={`rounded border px-2 py-0.5 text-[11px] font-medium ${
+                          f.status === 'confirmed'
                             ? 'border-red-300 bg-red-50 text-red-800'
-                            : 'border-slate-200 bg-white text-slate-700'
+                            : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
                         }`}
                       >
-                        Confirm Finding
+                        Confirm
                       </button>
                       <button
                         type="button"
-                        onClick={() => handleFindingDecision(finding.id, 'rejected')}
-                        className={`rounded border px-2 py-1 font-medium ${
-                          finding.status === 'rejected'
-                            ? 'border-slate-400 bg-slate-200 text-slate-900'
-                            : 'border-slate-200 bg-white text-slate-700'
+                        onClick={() => handleFindingDecision(f.id, 'rejected')}
+                        className={`rounded border px-2 py-0.5 text-[11px] font-medium ${
+                          f.status === 'rejected'
+                            ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
+                            : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
                         }`}
                       >
                         Dismiss
@@ -849,75 +864,28 @@ export const EvaluationView: React.FC<EvaluationViewProps> = ({
         </div>
 
         {/* Coaching Feedback */}
-        <div className="rounded-lg border border-slate-200 bg-white p-5 space-y-4">
-          <div className="border-b border-slate-100 pb-3">
-            <h2 className="text-sm font-semibold text-slate-900">E2. Coaching Feedback</h2>
-          </div>
-
+        <div className="rounded-lg border border-slate-200 bg-white p-5 space-y-3">
+          <h2 className="border-b border-slate-100 pb-3 text-sm font-semibold text-slate-900">
+            Coaching &amp; Evaluator Notes
+          </h2>
+          {record.overallSummary && (
+            <div>
+              <div className="text-xs font-semibold text-slate-700">AI Call Summary</div>
+              <p className="mt-1 text-xs text-slate-600">{record.overallSummary}</p>
+            </div>
+          )}
           <div>
-            <h3 className="text-xs font-semibold text-emerald-800">Strengths</h3>
-            <ul className="mt-1.5 list-disc pl-4 space-y-1 text-xs text-slate-700">
-              {record.coachingFeedback.strengths.length > 0 ? (
-                record.coachingFeedback.strengths.map((s, i) => <li key={i}>{s}</li>)
-              ) : (
-                <li>No specific strengths recorded.</li>
-              )}
-            </ul>
+            <label className="block text-xs font-semibold text-slate-700">
+              Evaluator Coaching Notes
+            </label>
+            <textarea
+              rows={4}
+              value={record.coachingNotes || ''}
+              onChange={(e) => handleCoachingNotesChange(e.target.value)}
+              placeholder="Write targeted coaching feedback for the agent..."
+              className="mt-1.5 w-full rounded-md border border-slate-300 p-2.5 text-xs text-slate-800 focus:border-blue-600 focus:outline-none"
+            />
           </div>
-
-          <div>
-            <h3 className="text-xs font-semibold text-amber-800">Areas for Improvement</h3>
-            <ul className="mt-1.5 list-disc pl-4 space-y-1 text-xs text-slate-700">
-              {record.coachingFeedback.areasForImprovement.length > 0 ? (
-                record.coachingFeedback.areasForImprovement.map((a, i) => <li key={i}>{a}</li>)
-              ) : (
-                <li>No improvement areas flagged.</li>
-              )}
-            </ul>
-          </div>
-
-          <div>
-            <h3 className="text-xs font-semibold text-blue-800">Recommended Coaching Actions</h3>
-            <ul className="mt-1.5 list-disc pl-4 space-y-1 text-xs text-slate-700">
-              {record.coachingFeedback.recommendedActions.length > 0 ? (
-                record.coachingFeedback.recommendedActions.map((r, i) => <li key={i}>{r}</li>)
-              ) : (
-                <li>Standard QA follow-up.</li>
-              )}
-            </ul>
-          </div>
-        </div>
-      </div>
-
-      {/* F. Final Review Footer */}
-      <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-slate-200 bg-white p-5">
-        <div className="text-xs text-slate-600">
-          <div className="font-semibold text-slate-900">F. Evaluator Review &amp; Sign-Off</div>
-          <p className="mt-0.5">
-            {isFinalised
-              ? `Finalised on ${new Date(record.finalisedAt || record.updatedAt).toLocaleString()} by ${record.finalisedBy}.`
-              : 'Review AI-generated marks, verify any MCC system checks, and click Finalise Evaluation when ready.'}
-          </p>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={() => exportSingleEvaluationToExcel(record)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
-          >
-            <Download className="h-3.5 w-3.5" />
-            <span>Download Excel Report</span>
-          </button>
-          <button
-            type="button"
-            onClick={handleFinalise}
-            disabled={isFinalised}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-700 px-4 py-2 text-xs font-medium text-white hover:bg-blue-800 disabled:bg-emerald-700"
-          >
-            <CheckCircle2 className="h-3.5 w-3.5" />
-            <span>{isFinalised ? 'Finalised' : 'Confirm & Finalise Evaluation'}</span>
-          </button>
         </div>
       </div>
     </div>
