@@ -48,7 +48,11 @@ type NavTab =
   | 'reports'
   | 'settings';
 
-const NAV_ITEMS: Array<{ id: NavTab; label: string; icon: React.ComponentType<{ className?: string }> }> = [
+const NAV_ITEMS: Array<{
+  id: NavTab;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+}> = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'upload', label: 'Upload Recording', icon: Upload },
   { id: 'transcription', label: 'Call Transcription', icon: MessageSquareText },
@@ -57,6 +61,11 @@ const NAV_ITEMS: Array<{ id: NavTab; label: string; icon: React.ComponentType<{ 
   { id: 'reports', label: 'Reports', icon: BarChart3 },
   { id: 'settings', label: 'Settings', icon: SettingsIcon },
 ];
+
+function fmtNum(val: unknown, digits = 1, fallback = '0.0'): string {
+  const n = typeof val === 'number' ? val : Number(val);
+  return Number.isFinite(n) ? n.toFixed(digits) : fallback;
+}
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
@@ -71,7 +80,6 @@ export default function App() {
   const [globalError, setGlobalError] = useState<string | null>(null);
   const [geminiConfigured, setGeminiConfigured] = useState<boolean | null>(null);
 
-  // Load persisted evaluations and check backend Gemini readiness
   useEffect(() => {
     let mounted = true;
 
@@ -80,9 +88,10 @@ export default function App() {
         await enforceRetentionPolicy(settings.dataRetention.maxHistoryDays);
         const list = await listEvaluations();
         if (!mounted) return;
-        setRecords(list);
-        if (list.length > 0) {
-          setActiveRecordId(list[0].id);
+        const safeList = Array.isArray(list) ? list : [];
+        setRecords(safeList);
+        if (safeList.length > 0) {
+          setActiveRecordId(safeList[0].id);
         }
       } catch (err) {
         if (mounted) {
@@ -98,7 +107,7 @@ export default function App() {
         const res = await fetch('/api/health');
         if (res.ok) {
           const data = await res.json();
-          if (mounted) setGeminiConfigured(Boolean(data.geminiConfigured));
+          if (mounted) setGeminiConfigured(Boolean(data?.geminiConfigured));
         }
       } catch {
         // Ignore transient health check failure
@@ -114,7 +123,6 @@ export default function App() {
   const activeRecord = records.find((r) => r.id === activeRecordId) || null;
   const activeAudioUrl = activeRecordId ? sessionAudioUrls[activeRecordId] || null : null;
 
-  // Attempt loading stored audio blob if user opted into retention and audio isn't in session memory
   useEffect(() => {
     if (!activeRecordId || sessionAudioUrls[activeRecordId]) return;
     const rec = records.find((r) => r.id === activeRecordId);
@@ -159,17 +167,19 @@ export default function App() {
       updatedAt: now,
       metadata: payload.metadata,
       transcription: payload.transcription,
-      scorecard: ev ? ev.scorecard : [],
-      fnolChecks: ev ? ev.fnolChecks : [],
-      criticalFindings: ev ? ev.criticalFindings : [],
-      coachingFeedback: ev
-        ? ev.coachingFeedback
-        : { strengths: [], areasForImprovement: [], recommendedActions: [] },
-      overallScore: ev ? ev.overallScore : 0,
-      aiOverallScore: ev ? ev.aiOverallScore : 0,
-      assessedMaxMarks: ev ? ev.assessedMaxMarks : 0,
-      performanceBand: ev ? ev.performanceBand : 'Poor',
-      requiresManualReview: ev ? ev.requiresManualReview : true,
+      scorecard: Array.isArray(ev?.scorecard) ? ev.scorecard : [],
+      fnolChecks: Array.isArray(ev?.fnolChecks) ? ev.fnolChecks : [],
+      criticalFindings: Array.isArray(ev?.criticalFindings) ? ev.criticalFindings : [],
+      coachingFeedback: ev?.coachingFeedback || {
+        strengths: [],
+        areasForImprovement: [],
+        recommendedActions: [],
+      },
+      overallScore: Number(ev?.overallScore) || 0,
+      aiOverallScore: Number(ev?.aiOverallScore) || 0,
+      assessedMaxMarks: Number(ev?.assessedMaxMarks) || 0,
+      performanceBand: ev?.performanceBand || 'Poor',
+      requiresManualReview: ev?.requiresManualReview ?? true,
       reviewState: 'ai_draft',
       hasStoredAudio: storedAudio,
     };
@@ -188,7 +198,7 @@ export default function App() {
 
   const handleUpdateSegments = async (segments: TranscriptSegment[]) => {
     if (!activeRecord) return;
-    const detected = Array.from(new Set(segments.map((s) => s.language)));
+    const detected = Array.from(new Set(segments.map((s) => s.language).filter(Boolean)));
     const updated: CallEvaluationRecord = {
       ...activeRecord,
       transcription: {
@@ -210,30 +220,32 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          transcriptSegments: activeRecord.transcription.segments,
+          transcriptSegments: activeRecord.transcription?.segments || [],
           metadata: activeRecord.metadata,
           scorecardConfig: settings.scorecard,
           qaRules: settings.qaRules,
           thresholds: settings.thresholds,
-          durationSeconds: activeRecord.metadata.durationSeconds,
+          durationSeconds: activeRecord.metadata?.durationSeconds,
         }),
       });
       const evalJson = await resp.json();
       if (!resp.ok) {
-        throw new Error(evalJson.error || `Re-evaluation failed (HTTP ${resp.status}).`);
+        throw new Error(evalJson?.error || `Re-evaluation failed (HTTP ${resp.status}).`);
       }
 
       const updated: CallEvaluationRecord = {
         ...activeRecord,
-        scorecard: evalJson.scorecard,
-        fnolChecks: evalJson.fnolChecks,
-        criticalFindings: evalJson.criticalFindings,
-        coachingFeedback: evalJson.coachingFeedback,
-        overallScore: evalJson.overallScore,
-        aiOverallScore: evalJson.aiOverallScore,
-        assessedMaxMarks: evalJson.assessedMaxMarks,
-        performanceBand: evalJson.performanceBand,
-        requiresManualReview: evalJson.requiresManualReview,
+        scorecard: Array.isArray(evalJson?.scorecard) ? evalJson.scorecard : [],
+        fnolChecks: Array.isArray(evalJson?.fnolChecks) ? evalJson.fnolChecks : [],
+        criticalFindings: Array.isArray(evalJson?.criticalFindings)
+          ? evalJson.criticalFindings
+          : [],
+        coachingFeedback: evalJson?.coachingFeedback || activeRecord.coachingFeedback,
+        overallScore: Number(evalJson?.overallScore) || 0,
+        aiOverallScore: Number(evalJson?.aiOverallScore) || 0,
+        assessedMaxMarks: Number(evalJson?.assessedMaxMarks) || 0,
+        performanceBand: evalJson?.performanceBand || 'Poor',
+        requiresManualReview: evalJson?.requiresManualReview ?? true,
         reviewState: 'ai_draft',
         updatedAt: new Date().toISOString(),
       };
@@ -351,12 +363,12 @@ export default function App() {
           {activeRecord ? (
             <div className="mt-1 space-y-0.5">
               <div className="truncate font-mono font-medium text-slate-900">
-                {activeRecord.metadata.callReference}
+                {activeRecord?.metadata?.callReference ?? '—'}
               </div>
               <div className="truncate">
-                {activeRecord.metadata.agentName} ·{' '}
+                {activeRecord?.metadata?.agentName ?? '—'} ·{' '}
                 <span className="font-mono font-semibold text-blue-700">
-                  {activeRecord.overallScore.toFixed(1)}
+                  {fmtNum(activeRecord?.overallScore, 1, '0.0')}
                 </span>
               </div>
             </div>
@@ -452,7 +464,9 @@ export default function App() {
             <div className="flex items-start gap-2.5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-900">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-700" />
               <div>
-                <strong>Gemini API Key Not Detected:</strong> Configure <code className="font-mono">GEMINI_API_KEY</code> in your environment Secrets panel so audio transcription and CQM evaluation endpoints can run.
+                <strong>Gemini API Key Not Detected:</strong> Configure{' '}
+                <code className="font-mono">GEMINI_API_KEY</code> in your environment Secrets panel
+                so audio transcription and CQM evaluation endpoints can run.
               </div>
             </div>
           )}
