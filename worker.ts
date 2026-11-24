@@ -1,11 +1,14 @@
 export interface Env {
+  GROQ_API_KEY?: string;
   GEMINI_API_KEY?: string;
+  GOOGLE_API_KEY?: string;
   ASSETS?: {
     fetch: (request: Request) => Promise<Response>;
   };
 }
 
-let dedicatedModelUnsupported = false;
+const GROQ_TRANSCRIBE_MODEL = 'whisper-large-v3-turbo';
+const GROQ_CHAT_MODEL = 'llama-3.3-70b-versatile';
 
 const FAIRFIRST_CQM_KNOWLEDGE = `
 FAIRFIRST INSURANCE SRI LANKA — CALL QUALITY MONITORING (CQM) & FNOL KNOWLEDGE BASE
@@ -65,89 +68,24 @@ function jsonResponse(data: unknown, status = 200): Response {
   });
 }
 
-function getApiKey(env: Env): string {
-  const rawKey =
-    env.GEMINI_API_KEY ||
-    (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : undefined);
-  const apiKey = typeof rawKey === 'string' ? rawKey.trim() : '';
+// Secret එකේ වටේ තියෙන අමතර space හෝ quotes (" ") ඉවත් කරන helper function එක
+function cleanSecret(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value.trim().replace(/^["']+|["']+$/g, '').trim();
+}
 
-  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
+function getGroqApiKey(env: Env): string {
+  const rawKey =
+    cleanSecret(env.GROQ_API_KEY) ||
+    (typeof process !== 'undefined' ? cleanSecret(process.env?.GROQ_API_KEY) : '');
+
+  if (!rawKey || rawKey === 'MY_GROQ_API_KEY') {
     throw new Error(
-      'GEMINI_API_KEY is not configured. Please add it in Worker Settings > Variables and secrets.'
+      'GROQ_API_KEY is not configured. Please add it in Worker Settings > Variables and secrets.'
     );
   }
 
-  return apiKey;
-}
-
-function isAuthTokenRejection(msg: string): boolean {
-  return (
-    msg.includes('401') ||
-    msg.includes('ACCESS_TOKEN_TYPE_INVALID') ||
-    msg.includes('ACCESS_TOKEN_TYPE_UNSUPPORTED') ||
-    msg.includes('API_KEY_INVALID')
-  );
-}
-
-async function callGeminiRest(
-  apiKey: string,
-  model: string,
-  payload: Record<string, unknown>,
-  timeoutMs = 30000,
-  label = 'gemini-call'
-): Promise<any> {
-  const cleanModel = model.replace(/^models\//, '');
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-    cleanModel
-  )}:generateContent?key=${encodeURIComponent(apiKey)}`;
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const resp = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-
-    const text = await resp.text();
-    let data: any = {};
-    try {
-      data = text ? JSON.parse(text) : {};
-    } catch {
-      data = { rawText: text };
-    }
-
-    if (!resp.ok) {
-      const apiMsg = data?.error?.message || text || `HTTP ${resp.status}`;
-      const reason = data?.error?.details?.[0]?.reason;
-      throw new Error(
-        `[${resp.status}${reason ? ` ${reason}` : ''}] ${apiMsg} (${label})`
-      );
-    }
-
-    return data;
-  } catch (err: unknown) {
-    if (err instanceof Error && err.name === 'AbortError') {
-      throw new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)}s`);
-    }
-    throw err;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function extractResponseText(respJson: any): string {
-  const parts = respJson?.candidates?.[0]?.content?.parts;
-  if (!Array.isArray(parts)) return '';
-  return parts
-    .map((p: any) => (typeof p?.text === 'string' ? p.text : ''))
-    .join('')
-    .trim();
+  return rawKey;
 }
 
 function getExtension(filename: string): string {
@@ -164,7 +102,7 @@ function isAllowedAudio(mime: string, filename: string): boolean {
 function normalizeAudioMimeType(originalMime: string, originalName: string): string {
   const ext = getExtension(originalName);
   if (ext === '.wav') return 'audio/wav';
-  if (ext === '.mp3') return 'audio/mp3';
+  if (ext === '.mp3') return 'audio/mpeg';
   if (ext === '.m4a') return 'audio/mp4';
   if (ext === '.ogg') return 'audio/ogg';
   if (ext === '.webm') return 'audio/webm';
@@ -172,16 +110,6 @@ function normalizeAudioMimeType(originalMime: string, originalName: string): str
   if (ext === '.aac') return 'audio/aac';
   if (originalMime && originalMime.startsWith('audio/')) return originalMime;
   return 'audio/wav';
-}
-
-function uint8ToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  const chunkSize = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    const slice = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
-    binary += String.fromCharCode(...slice);
-  }
-  return btoa(binary);
 }
 
 function parseTimestampToSeconds(ts: string): number {
@@ -209,8 +137,8 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 1): Promise<T> {
       const isTransient =
         msg.includes('503') ||
         msg.includes('429') ||
-        msg.includes('UNAVAILABLE') ||
-        msg.includes('high demand') ||
+        msg.includes('502') ||
+        msg.includes('rate limit') ||
         msg.includes('timeout') ||
         msg.includes('timed out');
       if (!isTransient || attempt === maxRetries) {
@@ -222,73 +150,164 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 1): Promise<T> {
   throw lastError;
 }
 
-function isUnavailableError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return (
-    isAuthTokenRejection(msg) ||
-    msg.includes('503') ||
-    msg.includes('429') ||
-    msg.includes('RESOURCE_EXHAUSTED') ||
-    msg.includes('UNAVAILABLE') ||
-    msg.includes('high demand') ||
-    msg.includes('timed out') ||
-    msg.includes('404') ||
-    msg.includes('NOT_FOUND')
-  );
-}
-
-function mapGeminiError(err: unknown): { status: number; message: string } {
-  const raw = err instanceof Error ? err.message : 'Unexpected server error during Gemini processing.';
-  if (raw.includes('GEMINI_API_KEY is not configured')) {
+function mapGroqError(err: unknown): { status: number; message: string } {
+  const raw = err instanceof Error ? err.message : 'Unexpected server error during Groq processing.';
+  if (raw.includes('GROQ_API_KEY is not configured')) {
     return { status: 503, message: raw };
   }
-  if (isAuthTokenRejection(raw)) {
+  if (raw.includes('401') || raw.toLowerCase().includes('invalid api key') || raw.toLowerCase().includes('unauthorized')) {
     return {
       status: 401,
-      message: `Gemini API key rejected by Google (${raw}). Create a standard AIza... API key in Google Cloud Console (APIs & Services > Credentials) with Generative Language API enabled, and set it as GEMINI_API_KEY in Cloudflare.`,
+      message: `Groq API key rejected (${raw}). Please verify GROQ_API_KEY in Cloudflare Worker Settings > Variables and secrets.`,
     };
   }
-  if (raw.includes('503') || raw.includes('UNAVAILABLE') || raw.includes('high demand')) {
-    return {
-      status: 503,
-      message: 'Gemini AI model is experiencing temporary high demand (503). Please try again in a few moments.',
-    };
-  }
-  if (raw.includes('PERMISSION_DENIED') || raw.includes('403')) {
-    return {
-      status: 403,
-      message: `Gemini API permission denied (${raw}). Please check API key / project access.`,
-    };
-  }
-  if (raw.includes('RESOURCE_EXHAUSTED') || raw.includes('429')) {
+  if (raw.includes('429') || raw.toLowerCase().includes('rate limit')) {
     return {
       status: 429,
-      message: 'Gemini API rate limit or quota reached. Please wait briefly and try again.',
+      message: 'Groq API rate limit reached. Please wait a moment and try again.',
     };
   }
-  if (raw.includes('NOT_FOUND') || raw.includes('404')) {
+  if (raw.includes('503') || raw.includes('502') || raw.includes('timed out')) {
     return {
-      status: 502,
-      message: `Requested Gemini model was unavailable: ${raw}`,
+      status: 503,
+      message: 'Groq service is temporarily busy or timed out. Please try again shortly.',
     };
   }
   return { status: 500, message: raw };
 }
 
+// Audio file එක Groq Whisper වෙත යවා raw transcript ලබාගැනීම
+async function transcribeAudioWithGroq(
+  apiKey: string,
+  audioBytes: Uint8Array,
+  filename: string,
+  mimeType: string,
+  timeoutMs = 35000
+): Promise<string> {
+  const endpoint = 'https://api.groq.com/openai/v1/audio/transcriptions';
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const form = new FormData();
+    const safeBytes = new Uint8Array(audioBytes);
+    const blob = new Blob([safeBytes], { type: mimeType });
+    form.append('file', blob, filename || 'recording.wav');
+    form.append('model', GROQ_TRANSCRIBE_MODEL);
+    form.append('response_format', 'json');
+
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: form,
+      signal: controller.signal,
+    });
+
+    const text = await resp.text();
+    let data: any = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = { rawText: text };
+    }
+
+    if (!resp.ok) {
+      const apiMsg = data?.error?.message || text || `HTTP ${resp.status}`;
+      throw new Error(`[${resp.status}] ${apiMsg} (groq-whisper)`);
+    }
+
+    return typeof data?.text === 'string' ? data.text.trim() : '';
+  } catch (err: unknown) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error(`groq-whisper timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Text / JSON response සඳහා Groq Llama chat endpoint භාවිතා කිරීම
+async function callGroqChatJson(
+  apiKey: string,
+  systemPrompt: string,
+  userPrompt: string,
+  timeoutMs = 35000,
+  label = 'groq-llama'
+): Promise<any> {
+  const endpoint = 'https://api.groq.com/openai/v1/chat/completions';
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: GROQ_CHAT_MODEL,
+        temperature: 0.2,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+      }),
+      signal: controller.signal,
+    });
+
+    const text = await resp.text();
+    let data: any = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = { rawText: text };
+    }
+
+    if (!resp.ok) {
+      const apiMsg = data?.error?.message || text || `HTTP ${resp.status}`;
+      throw new Error(`[${resp.status}] ${apiMsg} (${label})`);
+    }
+
+    const content = data?.choices?.[0]?.message?.content;
+    if (typeof content !== 'string' || !content.trim()) {
+      return {};
+    }
+
+    try {
+      return JSON.parse(content.trim());
+    } catch {
+      return {};
+    }
+  } catch (err: unknown) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function handleHealth(env: Env): Promise<Response> {
   const rawKey =
-    env.GEMINI_API_KEY ||
-    (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : undefined);
-  const apiKey = typeof rawKey === 'string' ? rawKey.trim() : '';
-  const hasKey = Boolean(apiKey && apiKey !== 'MY_GEMINI_API_KEY');
+    cleanSecret(env.GROQ_API_KEY) ||
+    (typeof process !== 'undefined' ? cleanSecret(process.env?.GROQ_API_KEY) : '');
+  const hasKey = Boolean(rawKey && rawKey !== 'MY_GROQ_API_KEY');
+
   return jsonResponse({
     ok: true,
-    geminiConfigured: hasKey,
+    provider: 'groq',
+    groqConfigured: hasKey,
     cqmKnowledgeLoaded: true,
-    keyPrefix: hasKey ? apiKey.slice(0, 8) : null,
+    keyPrefix: hasKey ? rawKey.slice(0, 8) : null,
     models: {
-      dedicatedTranscription: 'gemini-3.5-transcribe',
-      audioUnderstandingAndEvaluation: 'gemini-4-hydrogen',
+      transcription: GROQ_TRANSCRIBE_MODEL,
+      analysisAndEvaluation: GROQ_CHAT_MODEL,
     },
   });
 }
@@ -332,73 +351,23 @@ async function handleTranscribe(request: Request, env: Env): Promise<Response> {
     }
 
     const mimeType = normalizeAudioMimeType(audioEntry.type || '', audioEntry.name || 'recording.wav');
-    const preferDedicatedFirst = parsedConfig.preferDedicatedTranscriptionFirst !== false;
     const arrayBuffer = await audioEntry.arrayBuffer();
     const uint8 = new Uint8Array(arrayBuffer);
-    const apiKey = getApiKey(env);
-
-    const audioPart = {
-      inlineData: {
-        mimeType,
-        data: uint8ToBase64(uint8),
-      },
-    };
+    const apiKey = getGroqApiKey(env);
 
     const warnings: string[] = [];
-    let primarySucceeded = false;
-    let fallbackUsed = false;
-    let rawDedicatedTranscript = '';
+    const rawTranscript = await withRetry(() =>
+      transcribeAudioWithGroq(
+        apiKey,
+        uint8,
+        audioEntry.name || 'recording.wav',
+        mimeType,
+        35000
+      )
+    );
 
-    if (preferDedicatedFirst && !dedicatedModelUnsupported) {
-      try {
-        const transcribeResp = await withRetry(() =>
-          callGeminiRest(
-            apiKey,
-            'gemini-3.5-transcribe',
-            {
-              contents: [
-                {
-                  parts: [
-                    audioPart,
-                    {
-                      text: 'Transcribe this Sri Lankan insurance FNOL contact centre call recording verbatim. Speakers may switch between Sinhala, English, and Tamil.',
-                    },
-                  ],
-                },
-              ],
-            },
-            20000,
-            'gemini-3.5-transcribe'
-          )
-        );
-        rawDedicatedTranscript = extractResponseText(transcribeResp);
-        if (rawDedicatedTranscript.length > 0) {
-          primarySucceeded = true;
-        } else {
-          fallbackUsed = true;
-          warnings.push('Dedicated transcription returned empty output; processed using Gemini audio-understanding fallback.');
-        }
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : 'Dedicated transcription unavailable';
-        fallbackUsed = true;
-        if (msg.includes('404') || msg.includes('NOT_FOUND')) {
-          dedicatedModelUnsupported = true;
-          warnings.push(
-            'Dedicated transcription endpoint (gemini-3.5-transcribe) is unavailable for this API configuration; processed via Gemini multimodal audio understanding.'
-          );
-        } else if (isAuthTokenRejection(msg)) {
-          warnings.push('Dedicated transcription rejected key format; attempting multimodal audio-understanding fallback.');
-        } else {
-          warnings.push('Dedicated transcription was unavailable; processed via Gemini multimodal audio understanding.');
-        }
-      }
-    } else {
-      fallbackUsed = true;
-      warnings.push(
-        dedicatedModelUnsupported
-          ? 'Dedicated transcription endpoint (gemini-3.5-transcribe) is unavailable for this API configuration; processed via Gemini multimodal audio understanding.'
-          : 'Direct multimodal audio-understanding mode selected in Settings.'
-      );
+    if (!rawTranscript) {
+      warnings.push('No intelligible speech was returned by the audio transcription model.');
     }
 
     const enabledLanguages = [
@@ -409,106 +378,53 @@ async function handleTranscribe(request: Request, env: Env): Promise<Response> {
       .filter(Boolean)
       .join(', ');
 
-    const systemInstruction = `You are a strict, verbatim audio transcription and speaker diarization engine.
+    const systemPrompt = `You are a strict, verbatim call-transcript structuring and speaker-diarization specialist.
 
 ANTI-HALLUCINATION RULE (HIGHEST PRIORITY):
-- First determine whether actual human speech is audible in the recording (set "hasIntelligibleSpeech" to true or false).
-- If the audio contains ONLY silence, static, dial tones, test tones, music, or unintelligible noise with NO clear spoken words, set "hasIntelligibleSpeech": false, return an empty "segments": [] array, and add a clear warning in "overallReliabilityWarnings".
-- NEVER invent, guess, or fabricate dialogue. For any unintelligible phrase inside a real conversation, write "[Unclear audio]".
+- Determine whether actual human speech is present in the transcript (set "hasIntelligibleSpeech" to true or false).
+- If the transcript is empty or contains only noise/silence markers with NO clear spoken words, set "hasIntelligibleSpeech": false, return an empty "segments": [] array, and add a clear warning in "overallReliabilityWarnings".
+- NEVER invent, guess, or fabricate dialogue. For any unclear phrase, write "[Unclear audio]".
 
 LANGUAGE & DISPLAY RULES (Supported: ${enabledLanguages || 'Sinhala, English, Tamil'}):
 1. SINHALA -> SINGLISH (ROMAN SINHALA):
-  - Transcribe spoken Sinhala words phonetically in Romanized Singlish (Roman letters).
+  - Convert spoken Sinhala words phonetically into natural Romanized Singlish (Roman letters).
   - NEVER output Sinhala Unicode script in "text".
-  - NEVER translate Sinhala speech into English; preserve the exact spoken meaning in Singlish.
+  - NEVER translate Sinhala speech into English; keep the exact spoken meaning in Singlish.
 2. ENGLISH:
-  - Transcribe spoken English words verbatim. Preserve Sinhala-English code-switching within the same sentence.
+  - Keep spoken English words accurately. Preserve Sinhala-English code-switching within the same line.
 3. TAMIL:
-  - Output Tamil speech in Tamil script in "text" and provide Roman Tamil in "romanText".
-  - If Tamil speech cannot be reliably recognised, set confidence to "low", explain in "uncertaintyNote", and use "[Unclear audio]".
-4. SPEAKER DIARIZATION:
-  - Label each turn "Agent" or "Customer" based on conversational role. Do NOT assume the first speaker is always the Agent.
-5. TIMESTAMPS:
-  - Provide accurate chronological MM:SS timestamps strictly within the recording duration.`;
+  - Keep Tamil speech in Tamil script in "text" and provide Roman Tamil in "romanText".
+4. SPEAKER DIARIZATION & TIMESTAMPS:
+  - Label each turn "Agent" or "Customer" based on conversational role.
+  - Provide chronological MM:SS timestamps.
 
-    const referenceHint = rawDedicatedTranscript
-      ? `\n\nReference raw ASR output from dedicated transcription pass (verify directly against the audio; correct any errors, apply Singlish for Sinhala, and add accurate speaker labels + timestamps):\n"""\n${rawDedicatedTranscript.slice(0, 12000)}\n"""`
-      : '';
-
-    const stageBSchema = {
-      type: 'OBJECT',
-      properties: {
-        hasIntelligibleSpeech: { type: 'BOOLEAN' },
-        detectedLanguages: { type: 'ARRAY', items: { type: 'STRING' } },
-        overallReliabilityWarnings: { type: 'ARRAY', items: { type: 'STRING' } },
-        segments: {
-          type: 'ARRAY',
-          items: {
-            type: 'OBJECT',
-            properties: {
-              speaker: { type: 'STRING' },
-              timestamp: { type: 'STRING' },
-              language: { type: 'STRING' },
-              text: { type: 'STRING' },
-              romanText: { type: 'STRING' },
-              confidence: { type: 'STRING' },
-              uncertaintyNote: { type: 'STRING' },
-            },
-            required: ['speaker', 'timestamp', 'language', 'text', 'confidence'],
-          },
-        },
-      },
-      required: ['hasIntelligibleSpeech', 'detectedLanguages', 'segments'],
-    };
-
-    const stageBPrompt = `Listen carefully to the entire call recording from start to finish and produce a complete, chronological, speaker-diarized transcript following all Singlish, code-switching, Tamil, and [Unclear audio] rules.${referenceHint}`;
-
-    let audioUnderstandingModelUsed = 'gemini-4-hydrogen';
-    let stageBResp;
-    try {
-      stageBResp = await withRetry(() =>
-        callGeminiRest(
-          apiKey,
-          'gemini-4-hydrogen',
-          {
-            systemInstruction: { parts: [{ text: systemInstruction }] },
-            contents: [{ parts: [audioPart, { text: stageBPrompt }] }],
-            generationConfig: {
-              responseMimeType: 'application/json',
-              responseSchema: stageBSchema,
-            },
-          },
-          40000,
-          'gemini-4-hydrogen'
-        )
-      );
-    } catch (err: unknown) {
-      if (!isUnavailableError(err)) throw err;
-      audioUnderstandingModelUsed = 'gemini-2.5-flash';
-      fallbackUsed = true;
-      warnings.push('Primary audio-understanding model unavailable/busy; processed using gemini-2.5-flash fallback.');
-      stageBResp = await withRetry(() =>
-        callGeminiRest(
-          apiKey,
-          'gemini-2.5-flash',
-          {
-            systemInstruction: { parts: [{ text: systemInstruction }] },
-            contents: [{ parts: [audioPart, { text: stageBPrompt }] }],
-            generationConfig: {
-              responseMimeType: 'application/json',
-              responseSchema: stageBSchema,
-            },
-          },
-          30000,
-          'gemini-2.5-flash'
-        )
-      );
+Return ONLY a valid JSON object matching this structure:
+{
+  "hasIntelligibleSpeech": boolean,
+  "detectedLanguages": string[],
+  "overallReliabilityWarnings": string[],
+  "segments": [
+    {
+      "speaker": "Agent" | "Customer",
+      "timestamp": "MM:SS",
+      "language": "Sinhala (Singlish)" | "English" | "Tamil" | "Mixed (Sinhala/English)" | "Mixed (Tamil/English)" | "Unclear",
+      "text": string,
+      "romanText": string,
+      "confidence": "high" | "medium" | "low",
+      "uncertaintyNote": string
     }
+  ]
+}`;
 
-    const parsed = JSON.parse((extractResponseText(stageBResp) || '{}').trim());
-    const hasSpeech = parsed.hasIntelligibleSpeech !== false;
-    const rawSegments = hasSpeech && Array.isArray(parsed.segments) ? parsed.segments : [];
-    const modelWarnings = Array.isArray(parsed.overallReliabilityWarnings) ? parsed.overallReliabilityWarnings : [];
+    const userPrompt = `Structure the following Sri Lankan insurance FNOL contact centre call transcript into speaker-diarized, timestamped segments following all rules:\n\n"""\n${rawTranscript.slice(0, 15000)}\n"""`;
+
+    const parsed = await withRetry(() =>
+      callGroqChatJson(apiKey, systemPrompt, userPrompt, 35000, 'groq-diarize-transcript')
+    );
+
+    const hasSpeech = parsed?.hasIntelligibleSpeech !== false && Boolean(rawTranscript);
+    const rawSegments = hasSpeech && Array.isArray(parsed?.segments) ? parsed.segments : [];
+    const modelWarnings = Array.isArray(parsed?.overallReliabilityWarnings) ? parsed.overallReliabilityWarnings : [];
 
     const normalizedSegments =
       rawSegments.length === 0
@@ -519,9 +435,9 @@ LANGUAGE & DISPLAY RULES (Supported: ${enabledLanguages || 'Sinhala, English, Ta
               timestamp: '00:00',
               timestampSeconds: 0,
               language: 'Unclear' as const,
-              text: '[Unclear audio — no intelligible speech detected]',
+              text: rawTranscript || '[Unclear audio — no intelligible speech detected]',
               confidence: 'low' as const,
-              uncertaintyNote: 'No intelligible human speech was detected in this recording.',
+              uncertaintyNote: 'No intelligible human speech was clearly detected in this recording.',
               isEdited: false,
             },
           ]
@@ -563,18 +479,19 @@ LANGUAGE & DISPLAY RULES (Supported: ${enabledLanguages || 'Sinhala, English, Ta
 
     return jsonResponse({
       segments: normalizedSegments,
-      detectedLanguages: Array.isArray(parsed.detectedLanguages) ? parsed.detectedLanguages : [],
+      detectedLanguages: Array.isArray(parsed?.detectedLanguages) ? parsed.detectedLanguages : [],
       processingMeta: {
-        primaryModelAttempted: 'gemini-3.5-transcribe',
-        primarySucceeded,
-        audioUnderstandingModel: audioUnderstandingModelUsed,
-        fallbackUsed,
+        provider: 'groq',
+        primaryModelAttempted: GROQ_TRANSCRIBE_MODEL,
+        primarySucceeded: Boolean(rawTranscript),
+        audioUnderstandingModel: GROQ_CHAT_MODEL,
+        fallbackUsed: false,
         warnings: [...warnings, ...modelWarnings].filter(Boolean),
-        rawDedicatedTranscript: rawDedicatedTranscript || undefined,
+        rawDedicatedTranscript: rawTranscript || undefined,
       },
     });
   } catch (err: unknown) {
-    const mapped = mapGeminiError(err);
+    const mapped = mapGroqError(err);
     return jsonResponse({ error: mapped.message }, mapped.status);
   }
 }
@@ -586,34 +503,26 @@ async function handleTransliterateSinglish(request: Request, env: Env): Promise<
     if (typeof text !== 'string' || !text.trim()) {
       return jsonResponse({ error: 'Text is required for Singlish conversion.' }, 400);
     }
-    const apiKey = getApiKey(env);
-    const prompt = `Convert any Sinhala Unicode script in the following insurance call line into natural Sri Lankan Singlish (Roman Sinhala). Preserve all English words unchanged and do NOT translate Sinhala into English:\n\n${text}`;
-    const schema = {
-      type: 'OBJECT',
-      properties: {
-        singlishText: { type: 'STRING' },
-      },
-      required: ['singlishText'],
-    };
 
-    const resp = await callGeminiRest(
+    const apiKey = getGroqApiKey(env);
+    const systemPrompt = `Convert any Sinhala Unicode script in the input text into natural Sri Lankan Singlish (Roman Sinhala). Preserve all English words unchanged and do NOT translate Sinhala into English. Return ONLY JSON: {"singlishText": "..."}.`;
+    const userPrompt = text;
+
+    const parsed = await callGroqChatJson(
       apiKey,
-      'gemini-2.5-flash',
-      {
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          responseMimeType: 'application/json',
-          responseSchema: schema,
-        },
-      },
-      15000,
-      'transliterate-singlish'
+      systemPrompt,
+      userPrompt,
+      20000,
+      'groq-transliterate-singlish'
     );
 
-    const parsed = JSON.parse((extractResponseText(resp) || '{}').trim());
-    return jsonResponse({ singlishText: parsed.singlishText || text });
+    return jsonResponse({
+      singlishText: typeof parsed?.singlishText === 'string' && parsed.singlishText.trim()
+        ? parsed.singlishText.trim()
+        : text,
+    });
   } catch (err: unknown) {
-    const mapped = mapGeminiError(err);
+    const mapped = mapGroqError(err);
     return jsonResponse({ error: mapped.message }, mapped.status);
   }
 }
@@ -664,7 +573,7 @@ async function handleEvaluate(request: Request, env: Env): Promise<Response> {
       return jsonResponse({ error: 'Cannot evaluate call without transcript segments.' }, 400);
     }
 
-    const apiKey = getApiKey(env);
+    const apiKey = getGroqApiKey(env);
     const activeScorecard = Array.isArray(scorecardConfig) && scorecardConfig.length > 0 ? scorecardConfig : [];
     const activeRules = Array.isArray(qaRules) ? qaRules.filter((r) => r.enabled !== false) : [];
 
@@ -691,7 +600,7 @@ async function handleEvaluate(request: Request, env: Env): Promise<Response> {
       )
       .join('\n');
 
-    const systemInstruction = `You are a senior insurance Contact Centre Quality Assurance Specialist evaluating a Fairfirst Insurance Sri Lanka call (primarily FNOL / Motor Claim / Medical / Mobitel / Policy & Renewal inquiries; calls may be in Singlish/Roman Sinhala, English, or Tamil).
+    const systemPrompt = `You are a senior insurance Contact Centre Quality Assurance Specialist evaluating a Fairfirst Insurance Sri Lanka call (primarily FNOL / Motor Claim / Medical / Mobitel / Policy & Renewal inquiries; calls may be in Singlish/Roman Sinhala, English, or Tamil).
 
 ${FAIRFIRST_CQM_KNOWLEDGE}
 
@@ -704,9 +613,53 @@ EVALUATION PRINCIPLES (STRICT):
 6. Flag policy/rule breaches clearly—especially if Virtual/C2C inspection was offered when heavy damage, drunk & drive, 10:00 PM–6:00 AM timing, or >24 hours elapsed applies, or if mandatory Assessor SMS / 15-minute callback rules were missed.
 7. Provide exact MM:SS timestamps and verbatim transcript quotes for evidence, especially for negative findings.
 8. Explain clearly why marks were deducted, and provide practical, constructive coaching feedback without repeating the same issue across unrelated parameters.
-9. Performance bands: Below 70 = Poor, 70 to <80 = Average, 80 to 90 = Good, Above 90 = Excellent.`;
+9. Performance bands: Below 70 = Poor, 70 to <80 = Average, 80 to 90 = Good, Above 90 = Excellent.
 
-    const prompt = `Evaluate this call transcript against the exact CQM Scorecard and FNOL QA Rules below.
+Return ONLY a valid JSON object matching this exact structure:
+{
+  "scorecard": [
+    {
+      "parameterId": "string",
+      "parameterName": "string",
+      "maxMarks": number,
+      "awardedMarks": number,
+      "status": "Excellent" | "Good" | "Needs Improvement" | "Failed" | "Not Assessable",
+      "reason": "string",
+      "evidence": "string",
+      "timestamp": "string",
+      "recommendedImprovement": "string",
+      "needsHumanReview": boolean,
+      "systemVerificationRequired": boolean
+    }
+  ],
+  "fnolChecks": [
+    {
+      "ruleId": "string",
+      "ruleTitle": "string",
+      "applicable": boolean,
+      "result": "Passed" | "Failed" | "Partial" | "Not Applicable" | "Requires Manual MCC Verification",
+      "evidence": "string",
+      "timestamp": "string",
+      "notes": "string"
+    }
+  ],
+  "criticalFindings": [
+    {
+      "category": "string",
+      "severity": "High" | "Medium",
+      "description": "string",
+      "timestamp": "string",
+      "evidence": "string"
+    }
+  ],
+  "coachingFeedback": {
+    "strengths": ["string"],
+    "areasForImprovement": ["string"],
+    "recommendedActions": ["string"]
+  }
+}`;
+
+    const userPrompt = `Evaluate this call transcript against the exact CQM Scorecard and FNOL QA Rules below.
 
 CALL METADATA:
 - Agent Name: ${metadata?.agentName || 'Unknown'}
@@ -726,124 +679,11 @@ ${rulesSpec}
 CHRONOLOGICAL TRANSCRIPT:
 ${formattedTranscript}`;
 
-    const evalSchema = {
-      type: 'OBJECT',
-      properties: {
-        scorecard: {
-          type: 'ARRAY',
-          items: {
-            type: 'OBJECT',
-            properties: {
-              parameterId: { type: 'STRING' },
-              parameterName: { type: 'STRING' },
-              maxMarks: { type: 'NUMBER' },
-              awardedMarks: { type: 'NUMBER' },
-              status: { type: 'STRING' },
-              reason: { type: 'STRING' },
-              evidence: { type: 'STRING' },
-              timestamp: { type: 'STRING' },
-              recommendedImprovement: { type: 'STRING' },
-              needsHumanReview: { type: 'BOOLEAN' },
-              systemVerificationRequired: { type: 'BOOLEAN' },
-            },
-            required: [
-              'parameterId',
-              'parameterName',
-              'maxMarks',
-              'awardedMarks',
-              'status',
-              'reason',
-              'evidence',
-              'timestamp',
-              'recommendedImprovement',
-              'needsHumanReview',
-              'systemVerificationRequired',
-            ],
-          },
-        },
-        fnolChecks: {
-          type: 'ARRAY',
-          items: {
-            type: 'OBJECT',
-            properties: {
-              ruleId: { type: 'STRING' },
-              ruleTitle: { type: 'STRING' },
-              applicable: { type: 'BOOLEAN' },
-              result: { type: 'STRING' },
-              evidence: { type: 'STRING' },
-              timestamp: { type: 'STRING' },
-              notes: { type: 'STRING' },
-            },
-            required: ['ruleId', 'ruleTitle', 'applicable', 'result', 'evidence', 'timestamp', 'notes'],
-          },
-        },
-        criticalFindings: {
-          type: 'ARRAY',
-          items: {
-            type: 'OBJECT',
-            properties: {
-              category: { type: 'STRING' },
-              severity: { type: 'STRING' },
-              description: { type: 'STRING' },
-              timestamp: { type: 'STRING' },
-              evidence: { type: 'STRING' },
-            },
-            required: ['category', 'severity', 'description', 'timestamp', 'evidence'],
-          },
-        },
-        coachingFeedback: {
-          type: 'OBJECT',
-          properties: {
-            strengths: { type: 'ARRAY', items: { type: 'STRING' } },
-            areasForImprovement: { type: 'ARRAY', items: { type: 'STRING' } },
-            recommendedActions: { type: 'ARRAY', items: { type: 'STRING' } },
-          },
-          required: ['strengths', 'areasForImprovement', 'recommendedActions'],
-        },
-      },
-      required: ['scorecard', 'fnolChecks', 'criticalFindings', 'coachingFeedback'],
-    };
+    const parsed = await withRetry(() =>
+      callGroqChatJson(apiKey, systemPrompt, userPrompt, 35000, 'groq-evaluate-call')
+    );
 
-    let evalResp;
-    try {
-      evalResp = await withRetry(() =>
-        callGeminiRest(
-          apiKey,
-          'gemini-4-hydrogen',
-          {
-            systemInstruction: { parts: [{ text: systemInstruction }] },
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: {
-              responseMimeType: 'application/json',
-              responseSchema: evalSchema,
-            },
-          },
-          30000,
-          'gemini-4-hydrogen-eval'
-        )
-      );
-    } catch (err: unknown) {
-      if (!isUnavailableError(err)) throw err;
-      evalResp = await withRetry(() =>
-        callGeminiRest(
-          apiKey,
-          'gemini-2.5-flash',
-          {
-            systemInstruction: { parts: [{ text: systemInstruction }] },
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: {
-              responseMimeType: 'application/json',
-              responseSchema: evalSchema,
-            },
-          },
-          25000,
-          'gemini-2.5-flash-eval'
-        )
-      );
-    }
-
-    const parsed = JSON.parse((extractResponseText(evalResp) || '{}').trim());
-    const aiScorecardRaw: Array<Record<string, unknown>> = Array.isArray(parsed.scorecard) ? parsed.scorecard : [];
+    const aiScorecardRaw: Array<Record<string, unknown>> = Array.isArray(parsed?.scorecard) ? parsed.scorecard : [];
     const validStatuses = ['Excellent', 'Good', 'Needs Improvement', 'Failed', 'Not Assessable'];
 
     const normalizedScorecard = activeScorecard.map((cfg) => {
@@ -918,7 +758,7 @@ ${formattedTranscript}`;
     else if (aiOverallScore >= averageMin) performanceBand = 'Average';
 
     const validRuleResults = ['Passed', 'Failed', 'Partial', 'Not Applicable', 'Requires Manual MCC Verification'];
-    const rawChecks: Array<Record<string, unknown>> = Array.isArray(parsed.fnolChecks) ? parsed.fnolChecks : [];
+    const rawChecks: Array<Record<string, unknown>> = Array.isArray(parsed?.fnolChecks) ? parsed.fnolChecks : [];
     const normalizedChecks = activeRules.map((rule) => {
       const found = rawChecks.find((c) => c.ruleId === rule.id);
       const resVal =
@@ -940,7 +780,7 @@ ${formattedTranscript}`;
       };
     });
 
-    const rawFindings: Array<Record<string, unknown>> = Array.isArray(parsed.criticalFindings) ? parsed.criticalFindings : [];
+    const rawFindings: Array<Record<string, unknown>> = Array.isArray(parsed?.criticalFindings) ? parsed.criticalFindings : [];
     const normalizedFindings = rawFindings.map((f, idx) => ({
       id: `finding-${idx + 1}-${Date.now()}`,
       category: typeof f.category === 'string' ? f.category : 'Process Failure',
@@ -952,11 +792,11 @@ ${formattedTranscript}`;
     }));
 
     const coachingFeedback = {
-      strengths: Array.isArray(parsed.coachingFeedback?.strengths) ? parsed.coachingFeedback.strengths : [],
-      areasForImprovement: Array.isArray(parsed.coachingFeedback?.areasForImprovement)
+      strengths: Array.isArray(parsed?.coachingFeedback?.strengths) ? parsed.coachingFeedback.strengths : [],
+      areasForImprovement: Array.isArray(parsed?.coachingFeedback?.areasForImprovement)
         ? parsed.coachingFeedback.areasForImprovement
         : [],
-      recommendedActions: Array.isArray(parsed.coachingFeedback?.recommendedActions)
+      recommendedActions: Array.isArray(parsed?.coachingFeedback?.recommendedActions)
         ? parsed.coachingFeedback.recommendedActions
         : [],
     };
@@ -975,7 +815,7 @@ ${formattedTranscript}`;
       requiresManualReview,
     });
   } catch (err: unknown) {
-    const mapped = mapGeminiError(err);
+    const mapped = mapGroqError(err);
     return jsonResponse({ error: mapped.message }, mapped.status);
   }
 }
