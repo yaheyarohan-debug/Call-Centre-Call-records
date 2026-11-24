@@ -19,18 +19,18 @@ function jsonResponse(data: unknown, status = 200): Response {
 }
 
 function getAiClient(env: Env): GoogleGenAI {
-  const apiKey = env.GEMINI_API_KEY || (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : undefined);
+  const rawKey =
+    env.GEMINI_API_KEY ||
+    (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : undefined);
+  const apiKey = typeof rawKey === 'string' ? rawKey.trim() : '';
+
   if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
-    throw new Error('GEMINI_API_KEY is not configured. Please add it in Worker Settings > Variables and secrets.');
+    throw new Error(
+      'GEMINI_API_KEY is not configured. Please add it in Worker Settings > Variables and secrets.'
+    );
   }
-  return new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
-  });
+
+  return new GoogleGenAI({ apiKey });
 }
 
 function getExtension(filename: string): string {
@@ -163,7 +163,10 @@ function mapGeminiError(err: unknown): { status: number; message: string } {
 }
 
 async function handleHealth(env: Env): Promise<Response> {
-  const apiKey = env.GEMINI_API_KEY || (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : undefined);
+  const rawKey =
+    env.GEMINI_API_KEY ||
+    (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : undefined);
+  const apiKey = typeof rawKey === 'string' ? rawKey.trim() : '';
   const hasKey = Boolean(apiKey && apiKey !== 'MY_GEMINI_API_KEY');
   return jsonResponse({
     ok: true,
