@@ -1,5 +1,3 @@
-import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
-
 export interface Env {
   GEMINI_API_KEY?: string;
   ASSETS?: {
@@ -40,16 +38,16 @@ FAIRFIRST INSURANCE SRI LANKA — CALL QUALITY MONITORING (CQM) & FNOL KNOWLEDGE
 5. INSPECTION ARRANGEMENT RULES (VIRTUAL VS PHYSICAL & RESTRICTIONS):
 - Virtual Inspection: If customer has a smartphone, explain clearly that a link will be sent via normal SMS, and when the customer turns on mobile data and taps/touches the link, they will automatically connect with an assessor.
 - Mandatory Virtual / C2C Exclusions (DO NOT offer Virtual/C2C when these apply):
-  * Heavy damage
-  * Drunk and drive
-  * Accident occurred between 10:00 PM (22:00) and 6:00 AM (06:00)
-  * More than 24 hours have passed since the accident occurred
+  - Heavy damage
+  - Drunk and drive
+  - Accident occurred between 10:00 PM (22:00) and 6:00 AM (06:00)
+  - More than 24 hours have passed since the accident occurred
 - Physical Inspection: If physical inspection is arranged, state that an assessor will come within 30 or 45 minutes to inspect the vehicle.
 - MANDATORY ASSESSOR SMS RULE (BOTH VIRTUAL & PHYSICAL): In BOTH Virtual and Physical inspection cases, the agent MUST inform the customer that the attending assessor's telephone number will be sent via SMS, and if there is any issue/problem, to call that number ("එන assessor මහත්මයාගේ දුරකථන අංකය ඔබතුමාට SMS එකකින් එවන්නම්. ගැටලුවක් තිබුණොත් ඒකට call කරන්න").
 
 6. SUPPORTING TEAMS & CALLBACK RULE (MOTOR CLAIM / MEDICAL / MOBITEL):
 - For Motor Claim calls, Medical calls, or Mobitel-related inquiries connected to internal/call-centre supporting teams:
-  * Agent MUST inform the customer that the supporting team will give a callback within 15 minutes, and the customer does NOT need to call back again ("විනාඩි 15 ඇතුළත call back එකක් දෙනවා, නැවත ඔබතුමා ගන්න ඕනේ නැහැ").
+  - Agent MUST inform the customer that the supporting team will give a callback within 15 minutes, and the customer does NOT need to call back again ("විනාඩි 15 ඇතුළත call back එකක් දෙනවා, නැවත ඔබතුමා ගන්න ඕනේ නැහැ").
 
 7. SERVICE LEVEL AGREEMENTS (SLA) REFERENCE:
 - Claims: 15 minutes
@@ -67,19 +65,80 @@ function jsonResponse(data: unknown, status = 200): Response {
   });
 }
 
-function getAiClient(env: Env): GoogleGenAI {
-  const apiKey = env.GEMINI_API_KEY || (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : undefined);
+function getApiKey(env: Env): string {
+  const rawKey =
+    env.GEMINI_API_KEY ||
+    (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : undefined);
+  const apiKey = typeof rawKey === 'string' ? rawKey.trim() : '';
+
   if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
-    throw new Error('GEMINI_API_KEY is not configured. Please add it in Worker Settings > Variables and secrets.');
+    throw new Error(
+      'GEMINI_API_KEY is not configured. Please add it in Worker Settings > Variables and secrets.'
+    );
   }
-  return new GoogleGenAI({
-    apiKey,
-    httpOptions: {
+
+  return apiKey;
+}
+
+async function callGeminiRest(
+  apiKey: string,
+  model: string,
+  payload: Record<string, unknown>,
+  timeoutMs = 30000,
+  label = 'gemini-call'
+): Promise<any> {
+  const cleanModel = model.replace(/^models\//, '');
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+    cleanModel
+  )}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const resp = await fetch(endpoint, {
+      method: 'POST',
       headers: {
-        'User-Agent': 'aistudio-build',
+        'Content-Type': 'application/json',
       },
-    },
-  });
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+
+    const text = await resp.text();
+    let data: any = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = { rawText: text };
+    }
+
+    if (!resp.ok) {
+      const apiMsg = data?.error?.message || text || `HTTP ${resp.status}`;
+      const reason = data?.error?.details?.[0]?.reason;
+      throw new Error(
+        `[${resp.status}${reason ? ` ${reason}` : ''}] ${apiMsg} (${label})`
+      );
+    }
+
+    return data;
+  } catch (err: unknown) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function extractResponseText(respJson: any): string {
+  const parts = respJson?.candidates?.[0]?.content?.parts;
+  if (!Array.isArray(parts)) return '';
+  return parts
+    .map((p: any) => (typeof p?.text === 'string' ? p.text : ''))
+    .join('')
+    .trim();
 }
 
 function getExtension(filename: string): string {
@@ -143,7 +202,8 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 1): Promise<T> {
         msg.includes('429') ||
         msg.includes('UNAVAILABLE') ||
         msg.includes('high demand') ||
-        msg.includes('timeout');
+        msg.includes('timeout') ||
+        msg.includes('timed out');
       if (!isTransient || attempt === maxRetries) {
         throw err;
       }
@@ -151,20 +211,6 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 1): Promise<T> {
     }
   }
   throw lastError;
-}
-
-async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)), ms);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }
 
 function isUnavailableError(err: unknown): boolean {
@@ -175,7 +221,9 @@ function isUnavailableError(err: unknown): boolean {
     msg.includes('RESOURCE_EXHAUSTED') ||
     msg.includes('UNAVAILABLE') ||
     msg.includes('high demand') ||
-    msg.includes('timed out')
+    msg.includes('timed out') ||
+    msg.includes('404') ||
+    msg.includes('NOT_FOUND')
   );
 }
 
@@ -184,16 +232,22 @@ function mapGeminiError(err: unknown): { status: number; message: string } {
   if (raw.includes('GEMINI_API_KEY is not configured')) {
     return { status: 503, message: raw };
   }
+  if (raw.includes('401') || raw.includes('ACCESS_TOKEN_TYPE_INVALID') || raw.includes('API_KEY_INVALID')) {
+    return {
+      status: 401,
+      message: `Gemini API key rejected by Google (${raw}). Check that GEMINI_API_KEY is a valid Google AI Studio / Cloud API key for Generative Language API.`,
+    };
+  }
   if (raw.includes('503') || raw.includes('UNAVAILABLE') || raw.includes('high demand')) {
     return {
       status: 503,
       message: 'Gemini AI model is experiencing temporary high demand (503). Please try again in a few moments.',
     };
   }
-  if (raw.includes('API_KEY_INVALID') || raw.includes('PERMISSION_DENIED') || raw.includes('403')) {
+  if (raw.includes('PERMISSION_DENIED') || raw.includes('403')) {
     return {
       status: 403,
-      message: 'Gemini API authentication failed. Please verify GEMINI_API_KEY in Worker Settings > Variables and secrets.',
+      message: `Gemini API permission denied (${raw}). Please check API key / project access.`,
     };
   }
   if (raw.includes('RESOURCE_EXHAUSTED') || raw.includes('429')) {
@@ -212,12 +266,16 @@ function mapGeminiError(err: unknown): { status: number; message: string } {
 }
 
 async function handleHealth(env: Env): Promise<Response> {
-  const apiKey = env.GEMINI_API_KEY || (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : undefined);
+  const rawKey =
+    env.GEMINI_API_KEY ||
+    (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : undefined);
+  const apiKey = typeof rawKey === 'string' ? rawKey.trim() : '';
   const hasKey = Boolean(apiKey && apiKey !== 'MY_GEMINI_API_KEY');
   return jsonResponse({
     ok: true,
     geminiConfigured: hasKey,
     cqmKnowledgeLoaded: true,
+    keyPrefix: hasKey ? apiKey.slice(0, 8) : null,
     models: {
       dedicatedTranscription: 'gemini-3.5-transcribe',
       audioUnderstandingAndEvaluation: 'gemini-4-hydrogen',
@@ -226,7 +284,6 @@ async function handleHealth(env: Env): Promise<Response> {
 }
 
 async function handleTranscribe(request: Request, env: Env): Promise<Response> {
-  let uploadedFileName: string | null = null;
   try {
     const formData = await request.formData();
     const audioEntry = formData.get('audio');
@@ -238,8 +295,8 @@ async function handleTranscribe(request: Request, env: Env): Promise<Response> {
     if (audioEntry.size === 0) {
       return jsonResponse({ error: 'Uploaded audio file is empty.' }, 400);
     }
-    if (audioEntry.size > 50 * 1024 * 1024) {
-      return jsonResponse({ error: 'Audio file exceeds the 50 MB upload limit.' }, 413);
+    if (audioEntry.size > 20 * 1024 * 1024) {
+      return jsonResponse({ error: 'Audio file exceeds the 20 MB inline limit.' }, 413);
     }
     if (!isAllowedAudio(audioEntry.type || '', audioEntry.name || 'recording.wav')) {
       return jsonResponse(
@@ -268,37 +325,14 @@ async function handleTranscribe(request: Request, env: Env): Promise<Response> {
     const preferDedicatedFirst = parsedConfig.preferDedicatedTranscriptionFirst !== false;
     const arrayBuffer = await audioEntry.arrayBuffer();
     const uint8 = new Uint8Array(arrayBuffer);
+    const apiKey = getApiKey(env);
 
-    const ai = getAiClient(env);
-
-    let audioPart:
-      | { inlineData: { mimeType: string; data: string } }
-      | { fileData: { fileUri: string; mimeType: string } };
-
-    if (audioEntry.size <= 12 * 1024 * 1024) {
-      audioPart = {
-        inlineData: {
-          mimeType,
-          data: uint8ToBase64(uint8),
-        },
-      };
-    } else {
-      const blob = new Blob([uint8], { type: mimeType });
-      const uploaded = await ai.files.upload({
-        file: blob,
-        config: { mimeType },
-      });
-      if (!uploaded.uri || !uploaded.name) {
-        throw new Error('Failed to upload large audio buffer for processing.');
-      }
-      uploadedFileName = uploaded.name;
-      audioPart = {
-        fileData: {
-          fileUri: uploaded.uri,
-          mimeType: uploaded.mimeType || mimeType,
-        },
-      };
-    }
+    const audioPart = {
+      inlineData: {
+        mimeType,
+        data: uint8ToBase64(uint8),
+      },
+    };
 
     const warnings: string[] = [];
     let primarySucceeded = false;
@@ -308,23 +342,26 @@ async function handleTranscribe(request: Request, env: Env): Promise<Response> {
     if (preferDedicatedFirst && !dedicatedModelUnsupported) {
       try {
         const transcribeResp = await withRetry(() =>
-          withTimeout(
-            ai.models.generateContent({
-              model: 'gemini-3.5-transcribe',
-              contents: {
-                parts: [
-                  audioPart,
-                  {
-                    text: 'Transcribe this Sri Lankan insurance FNOL contact centre call recording verbatim. Speakers may switch between Sinhala, English, and Tamil.',
-                  },
-                ],
-              },
-            }),
+          callGeminiRest(
+            apiKey,
+            'gemini-3.5-transcribe',
+            {
+              contents: [
+                {
+                  parts: [
+                    audioPart,
+                    {
+                      text: 'Transcribe this Sri Lankan insurance FNOL contact centre call recording verbatim. Speakers may switch between Sinhala, English, and Tamil.',
+                    },
+                  ],
+                },
+              ],
+            },
             20000,
             'gemini-3.5-transcribe'
           )
         );
-        rawDedicatedTranscript = (transcribeResp.text || '').trim();
+        rawDedicatedTranscript = extractResponseText(transcribeResp);
         if (rawDedicatedTranscript.length > 0) {
           primarySucceeded = true;
         } else {
@@ -332,8 +369,11 @@ async function handleTranscribe(request: Request, env: Env): Promise<Response> {
           warnings.push('Dedicated transcription returned empty output; processed using Gemini audio-understanding fallback.');
         }
       } catch (err: unknown) {
-        fallbackUsed = true;
         const msg = err instanceof Error ? err.message : 'Dedicated transcription unavailable';
+        if (msg.includes('401') || msg.includes('ACCESS_TOKEN_TYPE_INVALID') || msg.includes('API_KEY_INVALID')) {
+          throw err;
+        }
+        fallbackUsed = true;
         if (msg.includes('404') || msg.includes('NOT_FOUND')) {
           dedicatedModelUnsupported = true;
           warnings.push(
@@ -386,49 +426,24 @@ LANGUAGE & DISPLAY RULES (Supported: ${enabledLanguages || 'Sinhala, English, Ta
       ? `\n\nReference raw ASR output from dedicated transcription pass (verify directly against the audio; correct any errors, apply Singlish for Sinhala, and add accurate speaker labels + timestamps):\n"""\n${rawDedicatedTranscript.slice(0, 12000)}\n"""`
       : '';
 
-    let audioUnderstandingModelUsed = 'gemini-4-hydrogen';
     const stageBSchema = {
-      type: Type.OBJECT,
+      type: 'OBJECT',
       properties: {
-        hasIntelligibleSpeech: {
-          type: Type.BOOLEAN,
-          description: 'True ONLY if actual intelligible human speech is audible in the audio; false for tones, silence, or noise.',
-        },
-        detectedLanguages: {
-          type: Type.ARRAY,
-          items: { type: Type.STRING },
-          description: 'List of languages detected in the recording.',
-        },
-        overallReliabilityWarnings: {
-          type: Type.ARRAY,
-          items: { type: Type.STRING },
-          description: 'Honest warnings if any language or audio portion could not be reliably recognised.',
-        },
+        hasIntelligibleSpeech: { type: 'BOOLEAN' },
+        detectedLanguages: { type: 'ARRAY', items: { type: 'STRING' } },
+        overallReliabilityWarnings: { type: 'ARRAY', items: { type: 'STRING' } },
         segments: {
-          type: Type.ARRAY,
+          type: 'ARRAY',
           items: {
-            type: Type.OBJECT,
+            type: 'OBJECT',
             properties: {
-              speaker: { type: Type.STRING, description: 'Must be "Agent" or "Customer".' },
-              timestamp: { type: Type.STRING, description: 'Timestamp in MM:SS format.' },
-              language: {
-                type: Type.STRING,
-                description:
-                  'One of: "Sinhala (Singlish)", "English", "Tamil", "Mixed (Sinhala/English)", "Mixed (Tamil/English)", "Unclear".',
-              },
-              text: {
-                type: Type.STRING,
-                description: 'Transcribed speech. Sinhala MUST be in Singlish (Roman Sinhala), NOT Sinhala Unicode and NOT translated to English.',
-              },
-              romanText: {
-                type: Type.STRING,
-                description: 'Romanized Tamil transliteration when language is Tamil or Mixed (Tamil/English); empty string otherwise.',
-              },
-              confidence: { type: Type.STRING, description: 'One of: "high", "medium", "low".' },
-              uncertaintyNote: {
-                type: Type.STRING,
-                description: 'Short explanation if confidence is medium/low or segment contains [Unclear audio].',
-              },
+              speaker: { type: 'STRING' },
+              timestamp: { type: 'STRING' },
+              language: { type: 'STRING' },
+              text: { type: 'STRING' },
+              romanText: { type: 'STRING' },
+              confidence: { type: 'STRING' },
+              uncertaintyNote: { type: 'STRING' },
             },
             required: ['speaker', 'timestamp', 'language', 'text', 'confidence'],
           },
@@ -439,92 +454,56 @@ LANGUAGE & DISPLAY RULES (Supported: ${enabledLanguages || 'Sinhala, English, Ta
 
     const stageBPrompt = `Listen carefully to the entire call recording from start to finish and produce a complete, chronological, speaker-diarized transcript following all Singlish, code-switching, Tamil, and [Unclear audio] rules.${referenceHint}`;
 
+    let audioUnderstandingModelUsed = 'gemini-4-hydrogen';
     let stageBResp;
     try {
       stageBResp = await withRetry(() =>
-        withTimeout(
-          ai.models.generateContent({
-            model: 'gemini-4-hydrogen',
-            contents: { parts: [audioPart, { text: stageBPrompt }] },
-            config: {
-              systemInstruction,
-              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        callGeminiRest(
+          apiKey,
+          'gemini-4-hydrogen',
+          {
+            systemInstruction: { parts: [{ text: systemInstruction }] },
+            contents: [{ parts: [audioPart, { text: stageBPrompt }] }],
+            generationConfig: {
               responseMimeType: 'application/json',
               responseSchema: stageBSchema,
             },
-          }),
+          },
           40000,
           'gemini-4-hydrogen'
         )
       );
     } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '';
+      if (msg.includes('401') || msg.includes('ACCESS_TOKEN_TYPE_INVALID') || msg.includes('API_KEY_INVALID')) {
+        throw err;
+      }
       if (!isUnavailableError(err)) throw err;
-      audioUnderstandingModelUsed = 'gemini-3.1-flash-lite';
+      audioUnderstandingModelUsed = 'gemini-2.5-flash';
       fallbackUsed = true;
-      warnings.push('Primary audio-understanding model temporarily busy; processed using gemini-3.1-flash-lite fallback.');
+      warnings.push('Primary audio-understanding model unavailable/busy; processed using gemini-2.5-flash fallback.');
       stageBResp = await withRetry(() =>
-        withTimeout(
-          ai.models.generateContent({
-            model: 'gemini-3.1-flash-lite',
-            contents: { parts: [audioPart, { text: stageBPrompt }] },
-            config: {
-              systemInstruction,
+        callGeminiRest(
+          apiKey,
+          'gemini-2.5-flash',
+          {
+            systemInstruction: { parts: [{ text: systemInstruction }] },
+            contents: [{ parts: [audioPart, { text: stageBPrompt }] }],
+            generationConfig: {
               responseMimeType: 'application/json',
               responseSchema: stageBSchema,
             },
-          }),
+          },
           30000,
-          'gemini-3.1-flash-lite'
+          'gemini-2.5-flash'
         )
       );
     }
 
-    const parsed = JSON.parse((stageBResp.text || '{}').trim());
+    const parsed = JSON.parse((extractResponseText(stageBResp) || '{}').trim());
     const hasSpeech = parsed.hasIntelligibleSpeech !== false;
     const rawSegments = hasSpeech && Array.isArray(parsed.segments) ? parsed.segments : [];
     const modelWarnings = Array.isArray(parsed.overallReliabilityWarnings) ? parsed.overallReliabilityWarnings : [];
-
-    const sinhalaUnicodeRegex = /[\u0D80-\u0DFF]/;
-    const segmentsWithUnicode = rawSegments
-      .map((s: Record<string, unknown>, i: number) => ({ index: i, text: String(s.text || '') }))
-      .filter((item: { index: number; text: string }) => sinhalaUnicodeRegex.test(item.text));
-
-    if (segmentsWithUnicode.length > 0) {
-      try {
-        const convResp = await withTimeout(
-          ai.models.generateContent({
-            model: 'gemini-3.1-flash-lite',
-            contents: `Convert any Sinhala Unicode script in these lines into natural Sri Lankan Singlish (Roman Sinhala). Preserve all English words unchanged and do NOT translate Sinhala into English. Return JSON array of { index, singlishText }.\n${JSON.stringify(segmentsWithUnicode)}`,
-            config: {
-              responseMimeType: 'application/json',
-              responseSchema: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    index: { type: Type.INTEGER },
-                    singlishText: { type: Type.STRING },
-                  },
-                  required: ['index', 'singlishText'],
-                },
-              },
-            },
-          }),
-          15000,
-          'singlish-conversion'
-        );
-        const converted = JSON.parse((convResp.text || '[]').trim());
-        if (Array.isArray(converted)) {
-          for (const item of converted) {
-            if (typeof item.index === 'number' && rawSegments[item.index] && typeof item.singlishText === 'string') {
-              rawSegments[item.index].text = item.singlishText;
-            }
-          }
-        }
-      } catch {
-        warnings.push('Some Sinhala Unicode characters could not be auto-converted to Singlish; please review manually.');
-      }
-    }
 
     const normalizedSegments =
       rawSegments.length === 0
@@ -592,15 +571,6 @@ LANGUAGE & DISPLAY RULES (Supported: ${enabledLanguages || 'Sinhala, English, Ta
   } catch (err: unknown) {
     const mapped = mapGeminiError(err);
     return jsonResponse({ error: mapped.message }, mapped.status);
-  } finally {
-    if (uploadedFileName) {
-      try {
-        const ai = getAiClient(env);
-        await ai.files.delete({ name: uploadedFileName });
-      } catch {
-        // Best-effort cleanup
-      }
-    }
   }
 }
 
@@ -611,48 +581,31 @@ async function handleTransliterateSinglish(request: Request, env: Env): Promise<
     if (typeof text !== 'string' || !text.trim()) {
       return jsonResponse({ error: 'Text is required for Singlish conversion.' }, 400);
     }
-    const ai = getAiClient(env);
+    const apiKey = getApiKey(env);
     const prompt = `Convert any Sinhala Unicode script in the following insurance call line into natural Sri Lankan Singlish (Roman Sinhala). Preserve all English words unchanged and do NOT translate Sinhala into English:\n\n${text}`;
     const schema = {
-      type: Type.OBJECT,
+      type: 'OBJECT',
       properties: {
-        singlishText: { type: Type.STRING },
+        singlishText: { type: 'STRING' },
       },
       required: ['singlishText'],
     };
 
-    let resp;
-    try {
-      resp = await withTimeout(
-        ai.models.generateContent({
-          model: 'gemini-4-hydrogen',
-          contents: prompt,
-          config: {
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-            responseMimeType: 'application/json',
-            responseSchema: schema,
-          },
-        }),
-        15000,
-        'transliterate-singlish'
-      );
-    } catch (err: unknown) {
-      if (!isUnavailableError(err)) throw err;
-      resp = await withTimeout(
-        ai.models.generateContent({
-          model: 'gemini-3.1-flash-lite',
-          contents: prompt,
-          config: {
-            responseMimeType: 'application/json',
-            responseSchema: schema,
-          },
-        }),
-        15000,
-        'transliterate-singlish-fallback'
-      );
-    }
+    const resp = await callGeminiRest(
+      apiKey,
+      'gemini-2.5-flash',
+      {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          responseMimeType: 'application/json',
+          responseSchema: schema,
+        },
+      },
+      15000,
+      'transliterate-singlish'
+    );
 
-    const parsed = JSON.parse((resp.text || '{}').trim());
+    const parsed = JSON.parse((extractResponseText(resp) || '{}').trim());
     return jsonResponse({ singlishText: parsed.singlishText || text });
   } catch (err: unknown) {
     const mapped = mapGeminiError(err);
@@ -700,14 +653,13 @@ async function handleEvaluate(request: Request, env: Env): Promise<Response> {
       durationSeconds?: number;
     };
 
-    const { transcriptSegments, metadata, scorecardConfig, qaRules, durationSeconds } = body;
+    const { transcriptSegments, metadata, scorecardConfig, qaRules, thresholds, durationSeconds } = body;
 
     if (!Array.isArray(transcriptSegments) || transcriptSegments.length === 0) {
       return jsonResponse({ error: 'Cannot evaluate call without transcript segments.' }, 400);
     }
 
-    const ai = getAiClient(env);
-
+    const apiKey = getApiKey(env);
     const activeScorecard = Array.isArray(scorecardConfig) && scorecardConfig.length > 0 ? scorecardConfig : [];
     const activeRules = Array.isArray(qaRules) ? qaRules.filter((r) => r.enabled !== false) : [];
 
@@ -743,54 +695,51 @@ EVALUATION PRINCIPLES (STRICT):
 2. NEVER invent conversations, customer statements, or Agent actions that are not in the transcript.
 3. NEVER award marks based on assumptions. Do not assume information was recorded in the MCC system merely because it was spoken on the call—explicitly flag MCC-system-dependent checks for manual system verification.
 4. NOT ASSESSABLE RULE: If a parameter cannot be evaluated from the recording (for example, Holding Procedure if no hold occurred and no hold policy breach applies, OR if the relevant audio segment is [Unclear audio] / low-confidence transcription), mark status as "Not Assessable", set awardedMarks to 0, set needsHumanReview to true, and explain why manual review is required. Do NOT silently award full marks.
-5. Do not penalise an Agent for a requirement that is not applicable (e.g., late intimation reason if the accident happened just now; third-party details if no third party was involved).
-6. Flag policy/rule breaches clearly—especially if Virtual/C2C inspection was offered when heavy damage, drunk & drive, 10:00 PM–6:00 AM timing, or >24 hours elapsed applies, or if the mandatory Assessor SMS number rule or 15-minute callback ("no need to call back") rule was missed.
-7. Distinguish clearly between a genuine Agent process failure and a transcription uncertainty.
-8. Provide exact MM:SS timestamps and verbatim transcript quotes for evidence, especially for negative findings.
-9. Explain clearly why marks were deducted, and provide practical, constructive coaching feedback without repeating the same issue across unrelated parameters.
-10. Performance bands: Below 70 = Poor, 70 to <80 = Average, 80 to 90 = Good, Above 90 = Excellent.`;
+5. Do not penalise an Agent for a requirement that is not applicable (e.g., late intimation reason if the accident happened just now; third party details if no third party was involved).
+6. Flag policy/rule breaches clearly—especially if Virtual/C2C inspection was offered when heavy damage, drunk & drive, 10:00 PM–6:00 AM timing, or >24 hours elapsed applies, or if mandatory Assessor SMS / 15-minute callback rules were missed.
+7. Provide exact MM:SS timestamps and verbatim transcript quotes for evidence, especially for negative findings.
+8. Explain clearly why marks were deducted, and provide practical, constructive coaching feedback without repeating the same issue across unrelated parameters.
+9. Performance bands: Below 70 = Poor, 70 to <80 = Average, 80 to 90 = Good, Above 90 = Excellent.`;
 
-    const prompt = `Evaluate this Fairfirst Insurance call transcript against the CQM Scorecard, FNOL/Inquiry QA Rules, and Fairfirst CQM Knowledge Base.
+    const prompt = `Evaluate this call transcript against the exact CQM Scorecard and FNOL QA Rules below.
 
 CALL METADATA:
 - Agent Name: ${metadata?.agentName || 'Unknown'}
 - Agent ID: ${metadata?.agentId || 'Unknown'}
 - Call Reference: ${metadata?.callReference || 'N/A'}
 - Call Date: ${metadata?.callDate || 'N/A'}
+- Call Type: FNOL
 - Recorded Duration: ${Math.round(Number(durationSeconds) || 0)} seconds
 - Additional Notes: ${metadata?.additionalNotes || 'None'}
 
 SCORECARD PARAMETERS (evaluate all ${activeScorecard.length} parameters independently, preserving exact parameterId and maxMarks):
-${scorecardSpec || '- Standard CQM evaluation across Greeting, Holding, Courtesy/Empathy/Tone, Script/Information Gathering, Inspection/Callback/SLA accuracy, and Closing.'}
+${scorecardSpec}
 
-PROCESS & MANDATORY QA CHECKS:
-${rulesSpec || '- Check Standard Greeting, Holding Method, Courtesy/Empathy/Tone, FNOL Script questions, Virtual/Physical Inspection & Assessor SMS rule, Supporting Team 15-min callback rule, and SLA timelines.'}
+FNOL PROCESS & MANDATORY QA CHECKS:
+${rulesSpec}
 
 CHRONOLOGICAL TRANSCRIPT:
 ${formattedTranscript}`;
 
     const evalSchema = {
-      type: Type.OBJECT,
+      type: 'OBJECT',
       properties: {
         scorecard: {
-          type: Type.ARRAY,
+          type: 'ARRAY',
           items: {
-            type: Type.OBJECT,
+            type: 'OBJECT',
             properties: {
-              parameterId: { type: Type.STRING },
-              parameterName: { type: Type.STRING },
-              maxMarks: { type: Type.NUMBER },
-              awardedMarks: { type: Type.NUMBER },
-              status: {
-                type: Type.STRING,
-                description: 'One of: "Excellent", "Good", "Needs Improvement", "Failed", "Not Assessable".',
-              },
-              reason: { type: Type.STRING },
-              evidence: { type: Type.STRING },
-              timestamp: { type: Type.STRING, description: 'MM:SS timestamp or "N/A".' },
-              recommendedImprovement: { type: Type.STRING },
-              needsHumanReview: { type: Type.BOOLEAN },
-              systemVerificationRequired: { type: Type.BOOLEAN },
+              parameterId: { type: 'STRING' },
+              parameterName: { type: 'STRING' },
+              maxMarks: { type: 'NUMBER' },
+              awardedMarks: { type: 'NUMBER' },
+              status: { type: 'STRING' },
+              reason: { type: 'STRING' },
+              evidence: { type: 'STRING' },
+              timestamp: { type: 'STRING' },
+              recommendedImprovement: { type: 'STRING' },
+              needsHumanReview: { type: 'BOOLEAN' },
+              systemVerificationRequired: { type: 'BOOLEAN' },
             },
             required: [
               'parameterId',
@@ -808,49 +757,41 @@ ${formattedTranscript}`;
           },
         },
         fnolChecks: {
-          type: Type.ARRAY,
+          type: 'ARRAY',
           items: {
-            type: Type.OBJECT,
+            type: 'OBJECT',
             properties: {
-              ruleId: { type: Type.STRING },
-              ruleTitle: { type: Type.STRING },
-              applicable: { type: Type.BOOLEAN },
-              result: {
-                type: Type.STRING,
-                description:
-                  'One of: "Passed", "Failed", "Partial", "Not Applicable", "Requires Manual MCC Verification".',
-              },
-              evidence: { type: Type.STRING },
-              timestamp: { type: Type.STRING },
-              notes: { type: Type.STRING },
+              ruleId: { type: 'STRING' },
+              ruleTitle: { type: 'STRING' },
+              applicable: { type: 'BOOLEAN' },
+              result: { type: 'STRING' },
+              evidence: { type: 'STRING' },
+              timestamp: { type: 'STRING' },
+              notes: { type: 'STRING' },
             },
             required: ['ruleId', 'ruleTitle', 'applicable', 'result', 'evidence', 'timestamp', 'notes'],
           },
         },
         criticalFindings: {
-          type: Type.ARRAY,
+          type: 'ARRAY',
           items: {
-            type: Type.OBJECT,
+            type: 'OBJECT',
             properties: {
-              category: {
-                type: Type.STRING,
-                description:
-                  'One of: "Process Failure", "Data Protection", "Missed Mandatory Question", "Incorrect Information", "Customer Handling".',
-              },
-              severity: { type: Type.STRING, description: '"High" or "Medium".' },
-              description: { type: Type.STRING },
-              timestamp: { type: Type.STRING },
-              evidence: { type: Type.STRING },
+              category: { type: 'STRING' },
+              severity: { type: 'STRING' },
+              description: { type: 'STRING' },
+              timestamp: { type: 'STRING' },
+              evidence: { type: 'STRING' },
             },
             required: ['category', 'severity', 'description', 'timestamp', 'evidence'],
           },
         },
         coachingFeedback: {
-          type: Type.OBJECT,
+          type: 'OBJECT',
           properties: {
-            strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
-            areasForImprovement: { type: Type.ARRAY, items: { type: Type.STRING } },
-            recommendedActions: { type: Type.ARRAY, items: { type: Type.STRING } },
+            strengths: { type: 'ARRAY', items: { type: 'STRING' } },
+            areasForImprovement: { type: 'ARRAY', items: { type: 'STRING' } },
+            recommendedActions: { type: 'ARRAY', items: { type: 'STRING' } },
           },
           required: ['strengths', 'areasForImprovement', 'recommendedActions'],
         },
@@ -861,50 +802,176 @@ ${formattedTranscript}`;
     let evalResp;
     try {
       evalResp = await withRetry(() =>
-        withTimeout(
-          ai.models.generateContent({
-            model: 'gemini-4-hydrogen',
-            contents: prompt,
-            config: {
-              systemInstruction,
-              thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+        callGeminiRest(
+          apiKey,
+          'gemini-4-hydrogen',
+          {
+            systemInstruction: { parts: [{ text: systemInstruction }] },
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
               responseMimeType: 'application/json',
               responseSchema: evalSchema,
             },
-          }),
-          35000,
-          'gemini-4-hydrogen-evaluate'
+          },
+          30000,
+          'gemini-4-hydrogen-eval'
         )
       );
     } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '';
+      if (msg.includes('401') || msg.includes('ACCESS_TOKEN_TYPE_INVALID') || msg.includes('API_KEY_INVALID')) {
+        throw err;
+      }
       if (!isUnavailableError(err)) throw err;
       evalResp = await withRetry(() =>
-        withTimeout(
-          ai.models.generateContent({
-            model: 'gemini-3.1-flash-lite',
-            contents: prompt,
-            config: {
-              systemInstruction,
+        callGeminiRest(
+          apiKey,
+          'gemini-2.5-flash',
+          {
+            systemInstruction: { parts: [{ text: systemInstruction }] },
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
               responseMimeType: 'application/json',
               responseSchema: evalSchema,
             },
-          }),
+          },
           25000,
-          'gemini-3.1-flash-lite-evaluate'
+          'gemini-2.5-flash-eval'
         )
       );
     }
 
-    const parsedEval = JSON.parse((evalResp.text || '{}').trim());
+    const parsed = JSON.parse((extractResponseText(evalResp) || '{}').trim());
+    const aiScorecardRaw: Array<Record<string, unknown>> = Array.isArray(parsed.scorecard) ? parsed.scorecard : [];
+    const validStatuses = ['Excellent', 'Good', 'Needs Improvement', 'Failed', 'Not Assessable'];
+
+    const normalizedScorecard = activeScorecard.map((cfg) => {
+      const match =
+        aiScorecardRaw.find((item) => item.parameterId === cfg.id) ||
+        aiScorecardRaw.find((item) => String(item.parameterName || '').toLowerCase() === cfg.name.toLowerCase());
+
+      if (!match) {
+        return {
+          parameterId: cfg.id,
+          parameterName: cfg.name,
+          maxMarks: cfg.weight,
+          awardedMarks: 0,
+          evaluatorMarks: null,
+          status: 'Not Assessable',
+          reason: 'Parameter was not returned by evaluation pass and requires manual review.',
+          evidence: 'N/A',
+          timestamp: 'N/A',
+          timestampSeconds: null,
+          recommendedImprovement: 'Review transcript manually for this criterion.',
+          needsHumanReview: true,
+          systemVerificationRequired: false,
+          evaluatorComment: '',
+          reviewDecision: 'pending',
+        };
+      }
+
+      const status = validStatuses.includes(String(match.status)) ? String(match.status) : 'Not Assessable';
+      const rawAwarded = Number(match.awardedMarks);
+      const clampedMarks =
+        status === 'Not Assessable'
+          ? 0
+          : Number.isFinite(rawAwarded)
+          ? Math.max(0, Math.min(cfg.weight, Math.round(rawAwarded * 10) / 10))
+          : 0;
+      const ts = typeof match.timestamp === 'string' && match.timestamp.trim() ? match.timestamp.trim() : 'N/A';
+
+      return {
+        parameterId: cfg.id,
+        parameterName: cfg.name,
+        maxMarks: cfg.weight,
+        awardedMarks: clampedMarks,
+        evaluatorMarks: null,
+        status,
+        reason: typeof match.reason === 'string' ? match.reason : '',
+        evidence: typeof match.evidence === 'string' ? match.evidence : 'N/A',
+        timestamp: ts,
+        timestampSeconds: /^\d{1,2}:\d{2}/.test(ts) ? parseTimestampToSeconds(ts) : null,
+        recommendedImprovement: typeof match.recommendedImprovement === 'string' ? match.recommendedImprovement : '',
+        needsHumanReview: Boolean(match.needsHumanReview) || status === 'Not Assessable',
+        systemVerificationRequired: Boolean(match.systemVerificationRequired),
+        evaluatorComment: '',
+        reviewDecision: 'pending',
+      };
+    });
+
+    const aiOverallScore =
+      Math.round(normalizedScorecard.reduce((sum, item) => sum + item.awardedMarks, 0) * 10) / 10;
+
+    const assessedMaxMarks = normalizedScorecard.reduce(
+      (sum, item) => sum + (item.status === 'Not Assessable' ? 0 : item.maxMarks),
+      0
+    );
+
+    const excellentMin = Number(thresholds?.excellentMin ?? 90);
+    const goodMin = Number(thresholds?.goodMin ?? 80);
+    const averageMin = Number(thresholds?.averageMin ?? 70);
+
+    let performanceBand = 'Poor';
+    if (aiOverallScore > excellentMin) performanceBand = 'Excellent';
+    else if (aiOverallScore >= goodMin) performanceBand = 'Good';
+    else if (aiOverallScore >= averageMin) performanceBand = 'Average';
+
+    const validRuleResults = ['Passed', 'Failed', 'Partial', 'Not Applicable', 'Requires Manual MCC Verification'];
+    const rawChecks: Array<Record<string, unknown>> = Array.isArray(parsed.fnolChecks) ? parsed.fnolChecks : [];
+    const normalizedChecks = activeRules.map((rule) => {
+      const found = rawChecks.find((c) => c.ruleId === rule.id);
+      const resVal =
+        found && validRuleResults.includes(String(found.result))
+          ? String(found.result)
+          : rule.requiresMccSystemCheck
+          ? 'Requires Manual MCC Verification'
+          : 'Not Applicable';
+
+      return {
+        ruleId: rule.id,
+        ruleTitle: rule.title,
+        applicable: found ? Boolean(found.applicable) : true,
+        result: resVal,
+        evidence: found && typeof found.evidence === 'string' ? found.evidence : 'N/A',
+        timestamp: found && typeof found.timestamp === 'string' ? found.timestamp : 'N/A',
+        notes: found && typeof found.notes === 'string' ? found.notes : '',
+        evaluatorConfirmed: null,
+      };
+    });
+
+    const rawFindings: Array<Record<string, unknown>> = Array.isArray(parsed.criticalFindings) ? parsed.criticalFindings : [];
+    const normalizedFindings = rawFindings.map((f, idx) => ({
+      id: `finding-${idx + 1}-${Date.now()}`,
+      category: typeof f.category === 'string' ? f.category : 'Process Failure',
+      severity: f.severity === 'High' ? 'High' : 'Medium',
+      description: typeof f.description === 'string' ? f.description : '',
+      timestamp: typeof f.timestamp === 'string' ? f.timestamp : 'N/A',
+      evidence: typeof f.evidence === 'string' ? f.evidence : '',
+      status: 'pending',
+    }));
+
+    const coachingFeedback = {
+      strengths: Array.isArray(parsed.coachingFeedback?.strengths) ? parsed.coachingFeedback.strengths : [],
+      areasForImprovement: Array.isArray(parsed.coachingFeedback?.areasForImprovement)
+        ? parsed.coachingFeedback.areasForImprovement
+        : [],
+      recommendedActions: Array.isArray(parsed.coachingFeedback?.recommendedActions)
+        ? parsed.coachingFeedback.recommendedActions
+        : [],
+    };
+
+    const requiresManualReview = normalizedScorecard.some((p) => p.needsHumanReview || p.systemVerificationRequired);
+
     return jsonResponse({
-      scorecard: Array.isArray(parsedEval.scorecard) ? parsedEval.scorecard : [],
-      fnolChecks: Array.isArray(parsedEval.fnolChecks) ? parsedEval.fnolChecks : [],
-      criticalFindings: Array.isArray(parsedEval.criticalFindings) ? parsedEval.criticalFindings : [],
-      coachingFeedback: parsedEval.coachingFeedback || {
-        strengths: [],
-        areasForImprovement: [],
-        recommendedActions: [],
-      },
+      scorecard: normalizedScorecard,
+      fnolChecks: normalizedChecks,
+      criticalFindings: normalizedFindings,
+      coachingFeedback,
+      overallScore: aiOverallScore,
+      aiOverallScore,
+      assessedMaxMarks,
+      performanceBand,
+      requiresManualReview,
     });
   } catch (err: unknown) {
     const mapped = mapGeminiError(err);
@@ -915,36 +982,32 @@ ${formattedTranscript}`;
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    const path = url.pathname;
+    const { pathname } = url;
 
-    if (request.method === 'OPTIONS') {
-      return new Response(null, {
-        status: 204,
-        headers: {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type',
-        },
-      });
-    }
-
-    if (path === '/api/health' && request.method === 'GET') {
+    if (pathname === '/api/health' && request.method === 'GET') {
       return handleHealth(env);
     }
-    if (path === '/api/transcribe' && request.method === 'POST') {
+
+    if (pathname === '/api/transcribe' && request.method === 'POST') {
       return handleTranscribe(request, env);
     }
-    if (path === '/api/transliterate-singlish' && request.method === 'POST') {
+
+    if (pathname === '/api/transliterate-singlish' && request.method === 'POST') {
       return handleTransliterateSinglish(request, env);
     }
-    if (path === '/api/evaluate' && request.method === 'POST') {
+
+    if (pathname === '/api/evaluate' && request.method === 'POST') {
       return handleEvaluate(request, env);
+    }
+
+    if (pathname.startsWith('/api/')) {
+      return jsonResponse({ error: `Method ${request.method} not allowed on ${pathname}` }, 405);
     }
 
     if (env.ASSETS) {
       return env.ASSETS.fetch(request);
     }
 
-    return jsonResponse({ error: 'Not found' }, 404);
+    return new Response('Not Found', { status: 404 });
   },
 };
